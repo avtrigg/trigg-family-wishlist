@@ -43,14 +43,22 @@ function requestPage(url, address, signal) {
         ? callback(null, [{ address, family: 4 }])
         : callback(null, address, 4),
     }, (response) => {
-      if (redirectStatuses.has(response.statusCode)) {
+      const status = response.statusCode;
+      const mime = response.headers["content-type"]?.split(";")[0].trim().toLowerCase() ?? "";
+      const encoding = response.headers["content-encoding"]?.trim().toLowerCase() || "identity";
+      const responseInfo = {
+        status,
+        contentType: /^[a-z0-9.+-]+\/[a-z0-9.+-]+$/.test(mime) ? mime : "unknown",
+        encoding: /^[a-z0-9-]{1,20}$/.test(encoding) ? encoding : "unknown",
+      };
+      if (redirectStatuses.has(status)) {
         response.destroy();
-        resolve({ location: response.headers.location });
+        resolve({ ...responseInfo, location: response.headers.location });
         return;
       }
-      if (response.statusCode !== 200 || !/html/i.test(response.headers["content-type"] ?? "")) {
+      if (status !== 200 || !/html/i.test(mime)) {
         response.destroy();
-        resolve({ status: response.statusCode });
+        resolve(responseInfo);
         return;
       }
       const pieces = [];
@@ -61,11 +69,11 @@ function requestPage(url, address, signal) {
         size += piece.length;
         if (size >= maxPageBytes) {
           response.destroy();
-          resolve({ html: Buffer.concat(pieces).toString("utf8") });
+          resolve({ ...responseInfo, html: Buffer.concat(pieces).toString("utf8"), bytes: maxPageBytes, truncated: true });
         }
       });
       response.on("error", reject);
-      response.on("end", () => resolve({ html: Buffer.concat(pieces).toString("utf8") }));
+      response.on("end", () => resolve({ ...responseInfo, html: Buffer.concat(pieces).toString("utf8"), bytes: size }));
     });
     request.on("error", reject);
   });
@@ -222,24 +230,69 @@ export function extractProduct(html, base) {
 
 const blank = () => ({ image: "", price: "" });
 
-export async function lookupProduct(value, { resolve = resolveHost, request = requestPage } = {}) {
+export async function lookupProduct(value, { resolve = resolveHost, request = requestPage, warn = console.warn } = {}) {
   let link = webUrl(value);
+  if (!link) return blank();
+  const originHost = new URL(link).hostname;
+  let host = originHost;
+  let isAmazon = host === "a.co" || host === "amzn.to" || amazonStore.test(host);
+  let redirects = 0;
+  let stage = "url";
+  const started = Date.now();
   const signal = AbortSignal.timeout(7000);
+
+  function logFailure(reason, fields = {}) {
+    if (isAmazon) {
+      warn("[amazon-lookup] " + JSON.stringify({
+        reason, stage, originHost, host, redirects, elapsedMs: Date.now() - started, ...fields,
+      }));
+    }
+    return blank();
+  }
+
   try {
-    for (let hop = 0; link && hop <= 3; hop++) {
+    while (redirects <= 3) {
+      stage = "url";
       signal.throwIfAborted();
       const url = new URL(link);
-      const host = url.hostname;
-      if (url.protocol !== "https:" || url.port || !host.includes(".") || isIP(host)) break;
-      const addresses = await resolve(host, signal);
-      if (!addresses.length || !addresses.every((address) => isIP(address) === 4 && publicAddress(address))) break;
-      const page = await request(url, addresses[0], signal);
-      if (page.html !== undefined) return extractProduct(page.html, link);
-      if ([403, 429, 503].includes(page.status)) {
-        return { ...blank(), message: "The retailer didn’t provide an accessible product page. You can still save the link and enter the details." };
+      host = url.hostname;
+      isAmazon ||= host === "a.co" || host === "amzn.to" || amazonStore.test(host);
+      if (url.protocol !== "https:" || url.port || !host.includes(".") || isIP(host)) {
+        return logFailure("unsupported_target");
       }
-      link = webUrl(page.location, link);
+      stage = "dns";
+      const addresses = await resolve(host, signal);
+      if (!addresses.length) return logFailure("no_ipv4_addresses");
+      if (!addresses.every((address) => isIP(address) === 4 && publicAddress(address))) {
+        return logFailure("non_public_dns_address");
+      }
+
+      stage = "request";
+      const { html, location, status, contentType, encoding, bytes, truncated } = await request(url, addresses[0], signal);
+      const response = { status, contentType, encoding, bytes, truncated };
+      if (html !== undefined) {
+        stage = "parse";
+        const product = extractProduct(html, link);
+        const missing = ["image", "price"].filter((field) => !product[field]);
+        if (missing.length) logFailure("missing_product_details", { ...response, missing });
+        return product;
+      }
+      if ([403, 429, 503].includes(response.status)) {
+        return { ...logFailure("http_error", response),
+          message: "The retailer didn’t provide an accessible product page. You can still save the link and enter the details." };
+      }
+      if (!location && !redirectStatuses.has(response.status)) {
+        return logFailure(response.status === 200 ? "unexpected_content_type" : "http_error", response);
+      }
+
+      stage = "redirect";
+      link = webUrl(location, link);
+      if (!link) return logFailure("invalid_redirect", response);
+      redirects++;
     }
-  } catch { /* A lookup failure should not prevent saving the URL. */ }
-  return blank();
+    return logFailure("redirect_limit");
+  } catch (error) {
+    const code = typeof error?.code === "string" && /^[A-Z0-9_]{1,40}$/.test(error.code) ? error.code : undefined;
+    return logFailure(signal.aborted ? "timeout" : stage + "_error", { code });
+  }
 }

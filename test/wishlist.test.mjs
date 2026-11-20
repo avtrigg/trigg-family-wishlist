@@ -223,3 +223,35 @@ test("Amazon lookup recovers earlier results for the same account and product", 
     assert.deepEqual(await lookup(alternate, other), { image: "", price: "" });
   }
 });
+
+test("Amazon failures log the stage and safe response details", async () => {
+  const lines = [];
+  const options = { resolve: async () => ["8.8.8.8"], warn: (line) => lines.push(line) };
+  const url = "https://www.amazon.com/dp/B000TEST01?tag=private-query";
+  await lookupProduct(url, { ...options, resolve: async () => {
+    throw Object.assign(new Error("private diagnostic payload"), { code: "ENOTFOUND" });
+  } });
+  await lookupProduct(url, { ...options, request: async () => ({ status: 503 }) });
+  await lookupProduct("https://a.co/private-token", {
+    ...options,
+    request: async (target) => target.hostname === "a.co"
+      ? { status: 302, location: url }
+      : { status: 200, html: "<html></html>", bytes: 13, contentType: "text/html", encoding: "identity" },
+  });
+  assert.equal(lines.length, 3);
+  const [dns, http, page] = lines.map((line) => {
+    assert.match(line, /^\[amazon-lookup\] /);
+    assert.doesNotMatch(line, /private-query|private-token|private diagnostic payload/);
+    return JSON.parse(line.slice("[amazon-lookup] ".length));
+  });
+  assert.equal(dns.reason, "dns_error");
+  assert.equal(dns.code, "ENOTFOUND");
+  assert.equal(http.reason, "http_error");
+  assert.equal(http.status, 503);
+  assert.equal(page.reason, "missing_product_details");
+  assert.equal(page.originHost, "a.co");
+  assert.equal(page.host, "www.amazon.com");
+  assert.equal(page.redirects, 1);
+  assert.equal(page.bytes, 13);
+  assert.deepEqual(page.missing, ["image", "price"]);
+});
