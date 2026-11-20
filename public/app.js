@@ -7,7 +7,7 @@ let wishlist;
 let navigation;
 let saving = false;
 let lookupTimer;
-let previewRequest;
+let productLookup;
 
 function html(value) {
   return String(value ?? "").replace(/[&<>"']/g, (character) => ({
@@ -161,14 +161,16 @@ function createListForm(personal = false) {
 }
 
 function itemForm(action, item = {}) {
+  resetProductLookup();
   const input = (name, label, type = "text") => '<label>' + label + '<input name="' + name + '" type="' + type + '" value="' + html(item[name]) + '"></label>';
   modal(action === "edit" ? "Edit item" : action === "purchase" ? "Add a purchased gift" : "Add item",
-    input("name", "Item name") + input("url", "Website link", "url") +
+    input("name", "Item name") + '<label>Website link<input name="url" type="text" inputmode="url" value="' + html(item.url) + '"></label>'  +
     '<p class="field-help" id="product-info" role="status">Paste a product link to look up its image and price.</p>' +
     '<div class="item-fields">' + input("price", "Price") + input("image", "Image link", "url") + '</div>' +
     '<label>Notes<textarea name="notes" rows="4">' + html(item.notes) + '</textarea></label>',
     action === "edit" ? "Save changes" : "Add item", action);
   editor.dataset.item = item.id ?? "";
+  editor.dataset.originalUrl = item.url ?? "";
   for (const name of ["image", "price"]) {
     const field = editor.querySelector('[name="' + name + '"]');
     field.dataset.auto = field.value;
@@ -176,35 +178,58 @@ function itemForm(action, item = {}) {
   editor.querySelector('[name="name"]').focus();
 }
 
-function schedulePreview(input) {
+function normalizeWebsite(value) {
+  const input = value.trim();
+  if (!input) return "";
+  const candidate = /^[^/\s:]+\.[^/\s:]+(?:[/?#]|$)/.test(input) ? "https://" + input : input;
+  try {
+    const url = new URL(candidate);
+    if (["https:", "http:"].includes(url.protocol) && !url.username && !url.password) return url.href;
+  } catch {}
+  return null;
+}
+
+function resetProductLookup() {
   clearTimeout(lookupTimer);
-  previewRequest?.abort();
-  if (!input.value.trim() || !input.validity.valid) return;
-  const url = input.value;
-  const form = input.form;
+  productLookup?.controller.abort();
+  productLookup = undefined;
+}
+
+function lookupWebsite(form, url) {
+  if (productLookup?.form === form && productLookup.url === url) return productLookup.done;
+  resetProductLookup();
+  const controller = new AbortController();
+  const { signal } = controller;
   const info = form.querySelector("#product-info");
-  lookupTimer = setTimeout(async () => {
-    previewRequest = new AbortController();
-    const { signal } = previewRequest;
-    const fields = ["image", "price"].map((name) => {
-      const target = form.elements.namedItem(name);
-      return { target, original: target.value };
-    });
-    info.textContent = "Looking for product details…";
-    try {
-      const metadata = await api("product", { url }, signal);
-      if (signal.aborted || input.value !== url || !editor.open) return;
-      for (const { target, original } of fields) {
-        if (target.value === original && metadata[target.name] && (!original || target.dataset.auto === original)) {
-          target.value = metadata[target.name];
-          target.dataset.auto = target.value;
-        }
+  const fields = ["image", "price"].map((name) => form.elements.namedItem(name));
+  info.textContent = "Looking for product details…";
+  const done = api("product", { url }, AbortSignal.any([signal, AbortSignal.timeout(8000)])).then((metadata) => {
+    if (signal.aborted || !editor.open) return;
+    for (const field of fields) {
+      if (field.dataset.auto === field.value && metadata[field.name]) {
+        field.value = metadata[field.name];
+        field.dataset.auto = field.value;
       }
-      info.textContent = metadata.image || metadata.price ? "Product details found. You can edit them below." : "No product details found. You can fill them in below.";
-    } catch {
-      if (!signal.aborted) info.textContent = "Product lookup unavailable. You can fill in the details below.";
     }
-  }, 350);
+    info.textContent = metadata.image || metadata.price
+      ? "Product details found. You can edit them below."
+      : metadata.message || "This site didn’t provide an image or price. You can still save the link.";
+  }).catch(() => {
+    if (!signal.aborted) info.textContent = "Product lookup unavailable. You can still save the link.";
+  });
+  productLookup = { controller, form, url, done };
+  return done;
+}
+
+function schedulePreview(input) {
+  resetProductLookup();
+  const url = normalizeWebsite(input.value);
+  const info = input.form.querySelector("#product-info");
+  if (!url) {
+    info.textContent = url === null ? "Enter a website link, such as example.com/product." : "Paste a product link to look up its image and price.";
+    return;
+  }
+  lookupTimer = setTimeout(() => void lookupWebsite(input.form, url), 350);
 }
 
 async function run(target, task) {
@@ -221,8 +246,7 @@ async function run(target, task) {
   }
 }
 
-async function itemAction(data) {
-  const id = wishlist.id;
+async function itemAction(data, id = wishlist.id) {
   await api("wishlists/" + id, data);
   if (editor.open) editor.close();
   await render();
@@ -238,19 +262,34 @@ editor.addEventListener("change", (event) => {
   editor.querySelector("#recipient-fields").hidden = !other;
   editor.querySelector('[name="name"]').required = other;
 });
-editor.addEventListener("close", () => { clearTimeout(lookupTimer); previewRequest?.abort(); });
+editor.addEventListener("close", resetProductLookup);
 editor.addEventListener("cancel", (event) => { if (saving) event.preventDefault(); });
 editor.addEventListener("submit", (event) => {
   event.preventDefault();
-  const fields = Object.fromEntries(new FormData(event.target));
-  const type = editor.dataset.type;
+  const form = event.target;
+  const { type, item, originalUrl } = editor.dataset;
+  const listId = wishlist?.id;
   void run(editor, async () => {
     if (type === "list") {
-      const { id } = await api("wishlists", fields);
+      const { id } = await api("wishlists", Object.fromEntries(new FormData(form)));
       editor.close();
       location.hash = id;
     } else {
-      await itemAction({ ...fields, action: type, itemId: editor.dataset.item });
+      if (type === "remove") {
+        await itemAction({ action: type, itemId: item }, listId);
+        return;
+      }
+      const website = form.elements.namedItem("url");
+      const url = normalizeWebsite(website.value);
+      if (url === null) throw new Error("Enter a valid website link.");
+      website.readOnly = true;
+      try {
+        if (url && url !== originalUrl) await lookupWebsite(form, url);
+        const fields = Object.fromEntries(new FormData(form));
+        await itemAction({ ...fields, url, action: type, itemId: item }, listId);
+      } finally {
+        website.readOnly = false;
+      }
     }
   });
 });
