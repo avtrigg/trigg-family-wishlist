@@ -113,3 +113,69 @@ test("product preview extracts public page metadata and skips loopback targets",
     { image: "https://example.com/a.png?x=y&z=1", price: "" });
   assert.deepEqual(await lookupProduct("https://127.0.0.1/"), { image: "", price: "" });
 });
+
+test("Amazon lookup uses the main image and current price, including after a short-link redirect", async (t) => {
+  const redirected = "https://www.amazon.com/dp/B000TEST01";
+  const image = "https://m.media-amazon.com/images/I/test.jpg";
+  const page = `
+    <meta property="og:image" content="https://example.com/other.jpg">
+    <img id="landingImage" data-a-dynamic-image='{&quot;${image}&quot;:[640,640]}'>
+    <div id="related"><span class="priceToPay"><span class="a-offscreen">$7.00</span></span></div>
+    <div id="corePrice_feature_div">
+      <span class="a-price a-text-price"><span class="a-offscreen">$69.00</span></span>
+      <div><span class="a-price priceToPay"><span class="a-offscreen">$49.99</span></span></div>
+      <span class="a-price"><span class="a-offscreen">$2.50</span></span>
+    </div>
+  `;
+  const calls = [];
+  const preview = (url) => lookupProduct(url, {
+    resolve: async () => ["8.8.8.8"],
+    request: async (target, address) => {
+      calls.push([target.href, address]);
+      return target.hostname === "a.co" ? { location: redirected } : { html: page };
+    },
+  });
+  const { send, signup } = fixture(t, { preview });
+  const cookie = await signup("retailer-test");
+  const result = await send("/api/product", { url: "https://a.co/example" }, cookie);
+  assert.deepEqual(await result.json(), { image, price: "$49.99" });
+  assert.deepEqual(calls, [["https://a.co/example", "8.8.8.8"], [redirected, "8.8.8.8"]]);
+});
+
+test("retailer metadata supports referenced offers and images and preserves missing values", () => {
+  const url = "https://shop.example.com/products/gift";
+  const html = `
+    <meta property=og:image content="/store-logo.png">
+    <script type="application/ld+json">{
+      "@graph":[
+        {"@type":"https://schema.org/Product","image":{"@id":"#hero"},"offers":{"@id":"#offer"}},
+        {"@type":"Offer","@id":"#offer","priceSpecification":{"price":8.5,"priceCurrency":"USD"}},
+        {"@type":"ImageObject","@id":"#hero","contentUrl":"/gift.jpg"}
+      ]
+    }</script>
+  `;
+  assert.deepEqual(extractProduct(html, url), { image: "https://shop.example.com/gift.jpg", price: "USD 8.5" });
+  assert.deepEqual(extractProduct('<meta property="og:image" content="/gift.jpg">', url),
+    { image: "https://shop.example.com/gift.jpg", price: "" });
+});
+
+test("product lookup stops before contacting a private redirect target", async () => {
+  const requested = [];
+  const result = await lookupProduct("https://shop.example.com/gift", {
+    resolve: async (host) => [host === "shop.example.com" ? "8.8.8.8" : "10.0.0.1"],
+    request: async (url) => {
+      requested.push(url.hostname);
+      return { location: "https://intranet.example.com/private" };
+    },
+  });
+  assert.deepEqual(requested, ["shop.example.com"]);
+  assert.deepEqual(result, { image: "", price: "" });
+
+  const blocked = await lookupProduct("https://www.amazon.com/dp/B000TEST01", {
+    resolve: async () => ["8.8.8.8"],
+    request: async () => ({ status: 503 }),
+  });
+  assert.equal(blocked.price, "");
+  assert.equal(blocked.image, "");
+  assert.match(blocked.message, /still save the link/);
+});
