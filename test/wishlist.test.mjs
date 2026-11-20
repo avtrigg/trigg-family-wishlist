@@ -6,7 +6,7 @@ import { extractProduct, lookupProduct } from "../products.mjs";
 
 const origin = "http://localhost:3000";
 const familyCode = "private-family-test-code";
-const password = "long-test-password";
+const password = "x";
 
 function fixture(t, overrides = {}) {
   const db = openDatabase(":memory:");
@@ -35,6 +35,7 @@ test("password accounts, optional recipient email, and one personal wishlist", a
   const { send, signup } = fixture(t);
   await send("/api/wishlists", undefined, undefined, 401);
   await send("/api/auth/signup", { username: "alex", password, familyCode: "wrong" }, undefined, 403);
+  await send("/api/auth/signup", { username: "alex", password: "", familyCode }, undefined, 400);
   const alex = await signup("alex");
   const first = await send("/api/wishlists", { for: "self" }, alex, 201);
   const { id } = await first.json();

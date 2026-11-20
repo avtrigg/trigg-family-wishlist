@@ -60,8 +60,7 @@ function authPage(message = "") {
     '<form id="auth-form"><h2>' + (signup ? "Create your account" : "Welcome back") + '</h2>' +
     '<label>Username<input name="username" autocomplete="username" required maxlength="32"></label>' +
     '<label>Password<input name="password" type="password" autocomplete="' + (signup ? "new-password" : "current-password") +
-    '" required maxlength="256"' + (signup ? ' minlength="10"' : '') + '></label>' +
-    (signup ? '<p class="field-help">Use at least 10 characters.</p>' : '') + code + alertRegion +
+    '" required maxlength="256"></label>' + code + alertRegion +
     '<button class="button auth-submit">' + label + '</button><div class="or"><span>or</span></div>' + google + '</form></section>';
   notice(app, message);
 }

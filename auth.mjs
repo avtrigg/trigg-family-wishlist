@@ -50,12 +50,11 @@ export function createAuth({ db, origin, googleId, googleSecret, familyCode, req
     const input = await request.json().catch(() => null);
     const username = typeof input?.username === "string" ? input.username.trim() : "";
     const password = input?.password;
-    if (!/^[a-zA-Z0-9_.-]{3,32}$/.test(username) || typeof password !== "string" || password.length > 256) {
+    if (!/^[a-zA-Z0-9_.-]{3,32}$/.test(username) || typeof password !== "string" || password.length === 0 || password.length > 256) {
       return fail("Enter a username of 3–32 letters, numbers, dots, dashes, or underscores and a password.", 400);
     }
     if (mode === "signup") {
       if (!checkCode(input.familyCode)) return fail("The family access code is incorrect.", 403);
-      if (password.length < 10) return fail("Choose a password with at least 10 characters.", 400);
       const salt = token();
       const stored = salt + "." + await passwordHash(password, salt);
       const result = db.prepare(`
