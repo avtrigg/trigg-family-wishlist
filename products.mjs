@@ -1,6 +1,9 @@
+import { execFile } from "node:child_process";
 import { Resolver } from "node:dns/promises";
-import { get } from "node:https";
+import { Agent, get } from "node:https";
 import { isIP } from "node:net";
+import { promisify } from "node:util";
+import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
 
 export function webUrl(value, base) {
   if (typeof value !== "string" || !value.trim()) return "";
@@ -22,6 +25,15 @@ function publicAddress(address) {
 
 const redirectStatuses = new Set([301, 302, 303, 307, 308]);
 const maxPageBytes = 2_000_000;
+const execFileAsync = promisify(execFile);
+const decoders = new Map([
+  ["gzip", createGunzip],
+  ["deflate", createInflate],
+  ["br", createBrotliDecompress],
+]);
+const [nodeMajor, nodeMinor] = process.versions.node.split(".").map(Number);
+const amazonProxyAgent = (nodeMajor > 24 || (nodeMajor === 24 && nodeMinor >= 5)) &&
+  (process.env.https_proxy || process.env.HTTPS_PROXY) ? new Agent({ proxyEnv: process.env }) : null;
 
 function resolveHost(host, signal) {
   const resolver = new Resolver({ timeout: 1200, tries: 2 });
@@ -30,18 +42,18 @@ function resolveHost(host, signal) {
   return resolver.resolve4(host).finally(() => signal.removeEventListener("abort", cancel));
 }
 
-function requestPage(url, address, signal) {
+function requestPage(url, address, signal, agent = false) {
   return new Promise((resolve, reject) => {
     const request = get(url, {
-      agent: false, signal,
+      agent, signal,
       headers: {
         Accept: "text/html,application/xhtml+xml",
-        "Accept-Encoding": "identity",
+        "Accept-Encoding": "gzip, deflate, br",
         "User-Agent": "FamilyWishlist/1.0",
       },
-      lookup: (_host, options, callback) => options.all
+      ...(address && { lookup: (_host, options, callback) => options.all
         ? callback(null, [{ address, family: 4 }])
-        : callback(null, address, 4),
+        : callback(null, address, 4) }),
     }, (response) => {
       const status = response.statusCode;
       const mime = response.headers["content-type"]?.split(";")[0].trim().toLowerCase() ?? "";
@@ -61,19 +73,29 @@ function requestPage(url, address, signal) {
         resolve(responseInfo);
         return;
       }
+      const decodeBody = decoders.get(encoding);
+      if (encoding !== "identity" && !decodeBody) {
+        response.destroy();
+        resolve({ ...responseInfo, unsupportedEncoding: true });
+        return;
+      }
+      const decoder = decodeBody?.();
+      const body = decoder ? response.pipe(decoder) : response;
+      if (decoder) decoder.on("error", (error) => { response.destroy(); reject(error); });
+      response.on("error", (error) => { decoder?.destroy(); reject(error); });
       const pieces = [];
       let size = 0;
-      response.on("data", (piece) => {
+      body.on("data", (piece) => {
         const remaining = maxPageBytes - size;
         pieces.push(piece.subarray(0, remaining));
         size += piece.length;
         if (size >= maxPageBytes) {
           response.destroy();
+          decoder?.destroy();
           resolve({ ...responseInfo, html: Buffer.concat(pieces).toString("utf8"), bytes: maxPageBytes, truncated: true });
         }
       });
-      response.on("error", reject);
-      response.on("end", () => resolve({ ...responseInfo, html: Buffer.concat(pieces).toString("utf8"), bytes: size }));
+      body.on("end", () => resolve({ ...responseInfo, html: Buffer.concat(pieces).toString("utf8"), bytes: size }));
     });
     request.on("error", reject);
   });
@@ -211,12 +233,21 @@ function standardProduct(html, base) {
 
 const amazonStore = /(^|\.)amazon\.(com(?:\.(?:au|be|br|mx|sg|tr))?|co\.(?:uk|jp|za)|ae|ca|de|eg|es|fr|ie|in|it|nl|pl|sa|se)$/i;
 
+function isAmazonShortHost(host) {
+  return host === "a.co" || host === "amzn.to";
+}
+
+function isAmazonProxyHost(host) {
+  const marketplace = host.replace(/^(?:www|m|smile)\./, "");
+  return isAmazonShortHost(host) || (marketplace.startsWith("amazon.") && amazonStore.test(marketplace));
+}
+
 export function amazonProductKey(value) {
   const link = webUrl(value);
   if (!link) return "";
   const url = new URL(link);
   const host = url.hostname.toLowerCase();
-  if (host === "a.co" || host === "amzn.to") return host + url.pathname.replace(/\/$/, "");
+  if (isAmazonShortHost(host)) return host + url.pathname.replace(/\/$/, "");
   if (!amazonStore.test(host)) return "";
   const asin = url.pathname.match(/\/(?:dp|gp\/product|gp\/aw\/d)\/([a-z0-9]{10})(?:\/|$)/i)?.[1];
   return asin ? host.replace(/^(?:www|m|smile)\./, "") + "/" + asin.toUpperCase() : "";
@@ -230,21 +261,54 @@ export function extractProduct(html, base) {
 
 const blank = () => ({ image: "", price: "" });
 
-export async function lookupProduct(value, { resolve = resolveHost, request = requestPage, warn = console.warn } = {}) {
+async function requestAmazonThroughProxy(url, signal) {
+  // Redirects are handled by lookupProduct so that every target passes its own checks.
+  let result;
+  try {
+    result = await execFileAsync("curl", [
+      "--http2", "--compressed", "--globoff", "--silent", "--show-error",
+      "--no-location", "--no-location-trusted", "--max-redirs", "0", "--no-insecure", "--no-proxy-insecure",
+      "--proto", "=https", "--max-time", "6", "--max-filesize", String(maxPageBytes),
+      "--user-agent", "FamilyWishlist/1.0", "--header", "Accept: text/html,application/xhtml+xml",
+      "--write-out", "\n%{json}", "--url", url.href,
+    ], { signal, maxBuffer: maxPageBytes + 65_536, encoding: "utf8" });
+  } catch (error) {
+    if (error.code === "ENOENT" || error.code === 2) return requestPage(url, null, signal, amazonProxyAgent);
+    if (Number.isInteger(error.code)) throw Object.assign(new Error("curl request failed"), { code: "CURL_" + error.code });
+    throw error;
+  }
+  const split = result.stdout.lastIndexOf("\n");
+  const { http_code: status, redirect_url: location, content_type: mime } = JSON.parse(result.stdout.slice(split + 1));
+  const mediaType = mime?.split(";")[0].trim().toLowerCase() ?? "";
+  const contentType = /^[a-z0-9.+-]+\/[a-z0-9.+-]+$/.test(mediaType) ? mediaType : "unknown";
+  const response = { status, contentType };
+  if (redirectStatuses.has(status)) return { ...response, location };
+  if (status !== 200 || !/html/i.test(contentType)) return response;
+  const html = result.stdout.slice(0, split);
+  return { ...response, html, bytes: Buffer.byteLength(html) };
+}
+
+const defaultProxyRequest = amazonProxyAgent && requestAmazonThroughProxy;
+
+export async function lookupProduct(value, {
+  resolve = resolveHost, request = requestPage, warn = console.warn,
+  proxyRequest = resolve === resolveHost && request === requestPage ? defaultProxyRequest : null,
+} = {}) {
   let link = webUrl(value);
   if (!link) return blank();
   const originHost = new URL(link).hostname;
   let host = originHost;
-  let isAmazon = host === "a.co" || host === "amzn.to" || amazonStore.test(host);
+  let isAmazon = isAmazonShortHost(host) || amazonStore.test(host);
   let redirects = 0;
   let stage = "url";
+  let transport = "direct";
   const started = Date.now();
   const signal = AbortSignal.timeout(7000);
 
   function logFailure(reason, fields = {}) {
     if (isAmazon) {
       warn("[amazon-lookup] " + JSON.stringify({
-        reason, stage, originHost, host, redirects, elapsedMs: Date.now() - started, ...fields,
+        reason, stage, transport, originHost, host, redirects, elapsedMs: Date.now() - started, ...fields,
       }));
     }
     return blank();
@@ -256,24 +320,37 @@ export async function lookupProduct(value, { resolve = resolveHost, request = re
       signal.throwIfAborted();
       const url = new URL(link);
       host = url.hostname;
-      isAmazon ||= host === "a.co" || host === "amzn.to" || amazonStore.test(host);
+      isAmazon ||= isAmazonShortHost(host) || amazonStore.test(host);
       if (url.protocol !== "https:" || url.port || !host.includes(".") || isIP(host)) {
         return logFailure("unsupported_target");
       }
-      stage = "dns";
-      const addresses = await resolve(host, signal);
-      if (!addresses.length) return logFailure("no_ipv4_addresses");
-      if (!addresses.every((address) => isIP(address) === 4 && publicAddress(address))) {
-        return logFailure("non_public_dns_address");
+      const useProxy = proxyRequest && isAmazonProxyHost(host);
+      transport = useProxy ? "configured_proxy" : "direct";
+      let address;
+      if (!useProxy) {
+        stage = "dns";
+        const addresses = await resolve(host, signal);
+        if (!addresses.length) return logFailure("no_ipv4_addresses");
+        if (!addresses.every((address) => isIP(address) === 4 && publicAddress(address))) {
+          return logFailure("non_public_dns_address");
+        }
+        address = addresses[0];
       }
 
       stage = "request";
-      const { html, location, status, contentType, encoding, bytes, truncated } = await request(url, addresses[0], signal);
+      const page = useProxy ? await proxyRequest(url, signal) : await request(url, address, signal);
+      const { html, location, status, contentType, encoding, bytes, truncated } = page;
       const response = { status, contentType, encoding, bytes, truncated };
+      if (page.unsupportedEncoding) return logFailure("unsupported_content_encoding", response);
       if (html !== undefined) {
         stage = "parse";
         const product = extractProduct(html, link);
         const missing = ["image", "price"].filter((field) => !product[field]);
+        if (isAmazon && missing.length === 2 &&
+            /validateCaptcha|<title>\s*Robot Check\s*<\/title>|to discuss automated access/i.test(html)) {
+          return { ...logFailure("amazon_verification_page", { ...response, missing }),
+            message: "Amazon returned a verification page. You can import a saved product page or save the link by itself." };
+        }
         if (missing.length) logFailure("missing_product_details", { ...response, missing });
         return product;
       }

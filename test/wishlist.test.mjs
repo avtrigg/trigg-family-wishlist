@@ -255,3 +255,34 @@ test("Amazon failures log the stage and safe response details", async () => {
   assert.equal(page.bytes, 13);
   assert.deepEqual(page.missing, ["image", "price"]);
 });
+
+test("configured Amazon proxy handles the short link and marketplace but not unrelated redirect targets", async () => {
+  const proxied = [];
+  const resolved = [];
+  const options = {
+    proxyRequest: async (url) => {
+      proxied.push(url.hostname);
+      return url.hostname === "a.co"
+        ? { status: 302, location: "https://www.amazon.com/dp/B000TEST01" }
+        : { status: 302, location: "https://intranet.example.com/private" };
+    },
+    resolve: async (host) => { resolved.push(host); return ["10.0.0.1"]; },
+    request: async () => assert.fail("Private redirect should not be requested"),
+    warn: () => {},
+  };
+  assert.deepEqual(await lookupProduct("https://a.co/example", options), { image: "", price: "" });
+  assert.deepEqual(proxied, ["a.co", "www.amazon.com"]);
+  assert.deepEqual(resolved, ["intranet.example.com"]);
+});
+
+test("an Amazon verification page is reported instead of treated as a product page", async () => {
+  const logs = [];
+  const result = await lookupProduct("https://www.amazon.com/dp/B000TEST01", {
+    proxyRequest: async () => ({ status: 200, html: '<form action="/errors/validateCaptcha"></form>' }),
+    warn: (line) => logs.push(line),
+  });
+  assert.equal(result.image, "");
+  assert.equal(result.price, "");
+  assert.match(result.message, /verification page/);
+  assert.match(logs[0], /amazon_verification_page/);
+});

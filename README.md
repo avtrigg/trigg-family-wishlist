@@ -30,3 +30,5 @@ Run `npm start` on a Node.js host with a persistent volume for `DATABASE_PATH`. 
 Product lookup fetches public HTTPS product pages on the server. It reads Amazon’s main product image and current price, and other retailers’ structured product and Open Graph metadata. HTTPS redirects are checked at each hop. If a store blocks the request, omits a price, or only loads details with JavaScript, you can save the link and enter the missing details by hand.
 
 If Amazon won’t serve a product page to the app, a previous lookup or an item you saved may supply the image or price. You can also open the product in your browser, save it as **HTML only**, and use **Import from a page you can open** in the item form. The HTML is read in your browser. Only the item details are saved.
+
+On Node.js 24.5 or newer, Amazon lookups use `HTTPS_PROXY` or `https_proxy` when one is configured. The app prefers HTTP/2 when the installed curl supports it. Other retailer links still use a direct connection with public-address checks.
