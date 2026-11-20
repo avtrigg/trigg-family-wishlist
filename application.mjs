@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { createAuth } from "./auth.mjs";
-import { lookupProduct, webUrl } from "./products.mjs";
+import { amazonProductKey, lookupProduct, webUrl } from "./products.mjs";
 
 const assets = new Map(Object.entries({
   "/": ["index.html", "text/html; charset=utf-8"],
@@ -69,15 +69,52 @@ export function createApplication(options) {
     `).all(list.id) : db.prepare(`
       SELECT i.id, i.name, i.url, i.notes, i.image, i.price, i.claimed_by IS NOT NULL AS claimed,
         i.claimed_by = ? AS claimedByMe, i.added_by = ? AS addedByMe, a.name AS addedBy,
-        claimant.name AS claimantName
+        claimant.name AS claimantName, claimant.first_name AS claimantFirstName
       FROM items i LEFT JOIN accounts a ON a.id = i.added_by
       LEFT JOIN accounts claimant ON claimant.id = i.claimed_by
       WHERE i.list_id = ? ORDER BY i.rowid DESC
-    `).all(user.id, user.id, list.id).map(({ claimantName, ...item }) => ({
+    `).all(user.id, user.id, list.id).map(({ claimantName, claimantFirstName, ...item }) => ({
       ...item,
-      claimedBy: claimantName?.trim().split(/\s+/)[0] || null,
+      claimedBy: claimantFirstName || claimantName?.trim().split(/\s+/)[0] || null,
     }));
     return json({ id: list.id, name: list.name, isOwner, canEdit, items });
+  }
+
+  async function productDetails(user, url) {
+    const productKey = amazonProductKey(url);
+    const live = await preview(url);
+    if (!productKey || (live.image && live.price)) {
+      if (productKey) rememberProduct(user.id, productKey, live);
+      return live;
+    }
+
+    const cached = db.prepare(`
+      SELECT image, price FROM product_details WHERE account_id = ? AND product_key = ? AND fetched_at >= ?
+    `).get(user.id, productKey, Date.now() - 30 * 24 * 60 * 60_000);
+    const saved = (!cached?.image || !cached?.price) && db.prepare(`
+      SELECT i.url, i.image, i.price FROM items i JOIN lists l ON l.id = i.list_id
+      WHERE (i.added_by = ? OR (i.added_by IS NULL AND l.owner_id = ?))
+      AND i.url <> '' AND (i.image <> '' OR i.price <> '')
+      ORDER BY i.rowid DESC
+    `).all(user.id, user.id).find((item) => amazonProductKey(item.url) === productKey);
+    const image = live.image || cached?.image || saved?.image || "";
+    const price = live.price || cached?.price || saved?.price || "";
+    if (live.image || live.price) rememberProduct(user.id, productKey, live);
+    if (image !== live.image || price !== live.price) {
+      return { image, price, message: "Reused saved product details. Check the current price on Amazon." };
+    }
+    return live;
+  }
+
+  function rememberProduct(accountId, productKey, details) {
+    db.prepare(`
+      INSERT INTO product_details (account_id, product_key, image, price, fetched_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(account_id, product_key) DO UPDATE SET image = excluded.image,
+        price = excluded.price, fetched_at = excluded.fetched_at
+      WHERE (product_details.image = '' OR excluded.image <> '')
+        AND (product_details.price = '' OR excluded.price <> '')
+    `).run(accountId, productKey, details.image, details.price, Date.now());
   }
 
   function itemFields(input) {
@@ -169,7 +206,7 @@ export function createApplication(options) {
       if (route === "/api/wishlists") return createList(user, input);
       if (route === "/api/product") {
         if (limited("preview:" + user.id, 40)) return fail("Too many lookups. You can still fill in the details.", 429);
-        return json(await preview(text(input.url)));
+        return json(await productDetails(user, text(input.url)));
       }
       if (listId) {
         const list = db.prepare("SELECT * FROM lists WHERE id = ?").get(listId);

@@ -49,6 +49,12 @@ function authPage(message = "") {
   const label = signup ? "Create account" : "Sign in";
   const code = signup && account.requiresCode
     ? '<label>Family access code<input name="familyCode" type="password" required></label>' : "";
+  const profile = signup
+    ? '<div class="name-fields"><label>First name<input name="firstName" autocomplete="given-name" required maxlength="80"></label>' +
+      '<label>Last name<input name="lastName" autocomplete="family-name" required maxlength="80"></label></div>' +
+      '<label>Shipping address <span class="field-help">(optional)</span>' +
+      '<textarea name="shippingAddress" autocomplete="street-address" rows="3" maxlength="1000"></textarea></label>'
+    : "";
   const google = '<button class="small-button google-button" type="button" data-action="google"' +
     (account.google ? "" : " disabled") + '><span aria-hidden="true" class="google-symbol">G</span>' +
     (signup ? "Create account with Google" : "Sign in with Google") + '</button>' +
@@ -58,7 +64,7 @@ function authPage(message = "") {
     '<button type="button" data-action="login" aria-pressed="' + !signup + '">Sign in</button>' +
     '<button type="button" data-action="signup" aria-pressed="' + signup + '">Create account</button></div>' +
     '<form id="auth-form"><h2>' + (signup ? "Create your account" : "Welcome back") + '</h2>' +
-    '<label>Username<input name="username" autocomplete="username" required maxlength="32"></label>' +
+    profile + '<label>Username<input name="username" autocomplete="username" required maxlength="32"></label>' +
     '<label>Password<input name="password" type="password" autocomplete="' + (signup ? "new-password" : "current-password") +
     '" required maxlength="256"></label>' + code + alertRegion +
     '<button class="button auth-submit">' + label + '</button><div class="or"><span>or</span></div>' + google + '</form></section>';
@@ -165,6 +171,10 @@ function itemForm(action, item = {}) {
   modal(action === "edit" ? "Edit item" : action === "purchase" ? "Add a purchased gift" : "Add item",
     input("name", "Item name") + '<label>Website link<input name="url" type="text" inputmode="url" value="' + html(item.url) + '"></label>'  +
     '<p class="field-help" id="product-info" role="status">Paste a product link to look up its image and price.</p>' +
+    '<details class="product-import" data-product-import' + (item.url && (!item.image || !item.price) ? "" : " hidden") + '>' +
+    '<summary>Import from a page you can open</summary>' +
+    '<p class="field-help">Open the product in your browser and save it as HTML. Choose that file here to read the image and price on this device.</p>' +
+    '<label>Saved product page<input name="productPage" type="file" accept=".html,.htm,text/html"></label></details>' +
     '<div class="item-fields">' + input("price", "Price") + input("image", "Image link", "url") + '</div>' +
     '<label>Notes<textarea name="notes" rows="4">' + html(item.notes) + '</textarea></label>',
     action === "edit" ? "Save changes" : "Add item", action);
@@ -194,27 +204,84 @@ function resetProductLookup() {
   productLookup = undefined;
 }
 
+function fillProductFields(form, metadata) {
+  for (const name of ["image", "price"]) {
+    const field = form.elements.namedItem(name);
+    if (field.dataset.auto === field.value && metadata[name]) {
+      field.value = metadata[name];
+      field.dataset.auto = field.value;
+    }
+  }
+  form.querySelector("[data-product-import]").hidden = Boolean(
+    form.elements.namedItem("image").value && form.elements.namedItem("price").value);
+}
+
+function detailsFromSavedPage(source, url) {
+  const template = document.createElement("template");
+  template.innerHTML = source;
+  const page = template.content;
+  const meta = (...keys) => keys.map((key) =>
+    page.querySelector('meta[property="' + key + '"], meta[itemprop="' + key + '"]')?.content).find(Boolean);
+  const mainImage = page.querySelector("#landingImage, #imgBlkFront");
+  let alternateImage;
+  try { alternateImage = Object.keys(JSON.parse(mainImage?.getAttribute("data-a-dynamic-image") ?? "{}"))[0]; }
+  catch {}
+  const currentPrice = page.querySelector(
+    "#corePriceDisplay_desktop_feature_div .priceToPay .a-offscreen, #corePrice_feature_div .priceToPay .a-offscreen, " +
+    "#corePrice_mobile_feature_div .apexPriceToPay .a-offscreen, #corePrice_desktop .priceToPay .a-offscreen, " +
+    "#priceblock_dealprice, #priceblock_ourprice, #priceblock_saleprice");
+  const imageOptions = [mainImage?.getAttribute("data-old-hires"), alternateImage, mainImage?.getAttribute("src"),
+    meta("og:image:secure_url", "og:image", "image")];
+  const image = imageOptions.map((candidate) => {
+    if (!candidate) return "";
+    try { return normalizeWebsite(new URL(candidate, url).href) || ""; }
+    catch { return ""; }
+  }).find((candidate) => candidate.startsWith("https:")) || "";
+  const amount = currentPrice?.textContent?.trim() || meta("product:price:amount", "og:price:amount", "price") || "";
+  const currency = meta("product:price:currency", "og:price:currency", "priceCurrency");
+  const prefix = /^[A-Z]{3}$/.test(currency ?? "") && /^\d/.test(amount) ? currency + " " : "";
+  return { image, price: /\d/.test(amount) && amount.length <= 40 ? prefix + amount : "" };
+}
+
+async function importProductPage(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const form = input.form;
+  const website = form.elements.namedItem("url");
+  const url = normalizeWebsite(website.value);
+  const info = form.querySelector("#product-info");
+  if (!url) { info.textContent = "Enter the product link before importing the page."; return; }
+  if (file.size > 16_000_000) { info.textContent = "This saved page is too large. Choose an HTML-only file."; return; }
+  try {
+    const metadata = detailsFromSavedPage(await file.text(), url);
+    if (!form.isConnected || normalizeWebsite(website.value) !== url) return;
+    fillProductFields(form, metadata);
+    info.textContent = metadata.image || metadata.price
+      ? "Product details read from your saved page."
+      : "Couldn’t find product details in this file. Save the product page as HTML and try again.";
+  } catch {
+    info.textContent = "Couldn’t read the saved page.";
+  }
+}
+
 function lookupWebsite(form, url) {
   if (productLookup?.form === form && productLookup.url === url) return productLookup.done;
   resetProductLookup();
   const controller = new AbortController();
   const { signal } = controller;
   const info = form.querySelector("#product-info");
-  const fields = ["image", "price"].map((name) => form.elements.namedItem(name));
   info.textContent = "Looking for product details…";
   const done = api("product", { url }, AbortSignal.any([signal, AbortSignal.timeout(8000)])).then((metadata) => {
     if (signal.aborted || !editor.open) return;
-    for (const field of fields) {
-      if (field.dataset.auto === field.value && metadata[field.name]) {
-        field.value = metadata[field.name];
-        field.dataset.auto = field.value;
-      }
-    }
-    info.textContent = metadata.image || metadata.price
+    fillProductFields(form, metadata);
+    info.textContent = metadata.message || (metadata.image || metadata.price
       ? "Product details found. You can edit them below."
-      : metadata.message || "This site didn’t provide an image or price. You can still save the link.";
+      : "Couldn’t get product details from this link. You can import a saved product page or save the link by itself.");
   }).catch(() => {
-    if (!signal.aborted) info.textContent = "Product lookup unavailable. You can still save the link.";
+    if (!signal.aborted) {
+      fillProductFields(form, {});
+      info.textContent = "Product lookup unavailable. You can import a saved product page or save the link by itself.";
+    }
   });
   productLookup = { controller, form, url, done };
   return done;
@@ -224,6 +291,7 @@ function schedulePreview(input) {
   resetProductLookup();
   const url = normalizeWebsite(input.value);
   const info = input.form.querySelector("#product-info");
+  input.form.querySelector("[data-product-import]").hidden = true;
   if (!url) {
     info.textContent = url === null ? "Enter a website link, such as example.com/product." : "Paste a product link to look up its image and price.";
     return;
@@ -256,6 +324,7 @@ editor.addEventListener("input", (event) => {
   if (["image", "price"].includes(event.target.name)) delete event.target.dataset.auto;
 });
 editor.addEventListener("change", (event) => {
+  if (event.target.name === "productPage") void importProductPage(event.target);
   if (event.target.name !== "for") return;
   const other = event.target.value === "other";
   editor.querySelector("#recipient-fields").hidden = !other;
@@ -285,6 +354,7 @@ editor.addEventListener("submit", (event) => {
       try {
         if (url && url !== originalUrl) await lookupWebsite(form, url);
         const fields = Object.fromEntries(new FormData(form));
+        delete fields.productPage;
         await itemAction({ ...fields, url, action: type, itemId: item }, listId);
       } finally {
         website.readOnly = false;
@@ -312,7 +382,17 @@ document.addEventListener("click", (event) => {
   if (action === "retry") void start();
   if (action === "google") void run(app, async () => {
     const familyCode = button.form.elements.namedItem("familyCode")?.value;
-    const { url } = await api("auth/google", { mode: authMode, familyCode });
+    const data = Object.fromEntries(new FormData(button.form));
+    if (authMode === "signup") {
+      for (const name of ["firstName", "lastName", "familyCode"]) {
+        const field = button.form.elements.namedItem(name);
+        if (field && !field.reportValidity()) return;
+      }
+    }
+    const { url } = await api("auth/google", {
+      mode: authMode, familyCode, firstName: data.firstName,
+      lastName: data.lastName, shippingAddress: data.shippingAddress,
+    });
     location.assign(url);
   });
   if (action === "logout") void run(app, async () => {

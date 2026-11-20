@@ -11,6 +11,16 @@ async function passwordHash(password, salt) {
   return (await derive(password, salt, 32, passwordOptions)).toString("hex");
 }
 
+function signupProfile(input) {
+  const firstName = typeof input?.firstName === "string" ? input.firstName.trim() : "";
+  const lastName = typeof input?.lastName === "string" ? input.lastName.trim() : "";
+  const shippingAddress = typeof input?.shippingAddress === "string" ? input.shippingAddress.trim() : "";
+  if (!firstName || !lastName || firstName.length > 80 || lastName.length > 80 || shippingAddress.length > 1000) return;
+  return { firstName, lastName, shippingAddress: shippingAddress || null };
+}
+
+const profileError = "Enter a first and last name and keep the optional shipping address under 1,001 characters.";
+
 export function cookieValue(request, name) {
   return (request.headers.get("cookie") ?? "").split(";").map((part) => part.trim())
     .find((part) => part.startsWith(name + "="))?.slice(name.length + 1);
@@ -55,12 +65,16 @@ export function createAuth({ db, origin, googleId, googleSecret, familyCode, req
     }
     if (mode === "signup") {
       if (!checkCode(input.familyCode)) return fail("The family access code is incorrect.", 403);
+      const profile = signupProfile(input);
+      if (!profile) return fail(profileError, 400);
+      const { firstName, lastName, shippingAddress } = profile;
       const salt = token();
       const stored = salt + "." + await passwordHash(password, salt);
       const result = db.prepare(`
-        INSERT INTO accounts (id, username, password, name) VALUES (?, ?, ?, ?)
+        INSERT INTO accounts (id, username, password, name, first_name, last_name, shipping_address)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(username) DO NOTHING RETURNING id, name
-      `).get(randomUUID(), username, stored, username);
+      `).get(randomUUID(), username, stored, firstName + " " + lastName, firstName, lastName, shippingAddress);
       if (!result) return fail("That username is already taken.", 409);
       return json({ user: result }, 201, { "Set-Cookie": startSession(result, request) });
     }
@@ -78,10 +92,13 @@ export function createAuth({ db, origin, googleId, googleSecret, familyCode, req
     const input = await request.json().catch(() => null);
     const mode = input?.mode === "signup" ? "signup" : "login";
     if (mode === "signup" && !checkCode(input.familyCode)) return fail("The family access code is incorrect.", 403);
+    const profile = mode === "signup" ? signupProfile(input) : null;
+    if (mode === "signup" && !profile) return fail(profileError, 400);
     const state = token();
     const verifier = token();
     db.prepare("DELETE FROM oauth_states WHERE expires <= ?").run(Date.now());
-    db.prepare("INSERT INTO oauth_states VALUES (?, ?, ?, ?)").run(state, verifier, mode, Date.now() + 600_000);
+    db.prepare("INSERT INTO oauth_states (state, verifier, mode, expires, signup_profile) VALUES (?, ?, ?, ?, ?)")
+      .run(state, verifier, mode, Date.now() + 600_000, profile ? JSON.stringify(profile) : null);
     const params = new URLSearchParams({
       client_id: googleId, redirect_uri: origin + "/auth/google/callback", response_type: "code",
       scope: "openid email profile", state, code_challenge: digest(verifier), code_challenge_method: "S256",
@@ -111,19 +128,21 @@ export function createAuth({ db, origin, googleId, googleSecret, familyCode, req
       ...options, headers: { Authorization: "Bearer " + access },
     });
     if (!profile.ok) return authError("google");
-    const { sub, name, email, email_verified: verified, hd } = await profile.json();
+    const { sub, email, email_verified: verified, hd } = await profile.json();
     if (typeof sub !== "string" || !sub) return authError("google");
     let account = db.prepare("SELECT id, name FROM accounts WHERE google_sub = ?").get(sub);
-    if (!account && flow.mode === "login") return authError("signup");
     if (!account) {
+      if (flow.mode !== "signup" || !flow.signup_profile) return authError("signup");
+      const { firstName, lastName, shippingAddress } = JSON.parse(flow.signup_profile);
       const address = typeof email === "string" ? email.toLowerCase() : "";
       const verifiedEmail = verified === true && (address.endsWith("@gmail.com") || hd) && address ? address : null;
       db.exec("BEGIN");
       try {
         account = db.prepare(`
-          INSERT INTO accounts (id, google_sub, verified_email, name) VALUES (?, ?, ?, ?)
+          INSERT INTO accounts (id, google_sub, verified_email, name, first_name, last_name, shipping_address)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(google_sub) DO UPDATE SET google_sub = excluded.google_sub RETURNING id, name
-        `).get(randomUUID(), sub, verifiedEmail, typeof name === "string" && name.trim() ? name.trim().slice(0, 100) : "Family member");
+        `).get(randomUUID(), sub, verifiedEmail, firstName + " " + lastName, firstName, lastName, shippingAddress);
         if (verifiedEmail) db.prepare("UPDATE lists SET owner_id = ? WHERE contact_email = ? AND owner_id IS NULL").run(account.id, verifiedEmail);
         db.exec("COMMIT");
       } catch (error) {

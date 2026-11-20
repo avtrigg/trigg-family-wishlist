@@ -11,7 +11,7 @@ npm test
 npm start
 ```
 
-Open http://localhost:3000. Create a username and password to try the site. For a second user, open a private browsing window and create another account.
+Open http://localhost:3000. Create an account with your first and last name and a username and password. The shipping address is optional and stays private. For a second user, open a private browsing window and create another account.
 
 ## Sign in with Google
 
@@ -28,3 +28,5 @@ Creating a list for yourself links it to your account. Each account can own one 
 Run `npm start` on a Node.js host with a persistent volume for `DATABASE_PATH`. Set `NODE_ENV=production`, `APP_ORIGIN` to the public HTTPS origin, and `FAMILY_ACCESS_CODE` to a random shared value of at least 16 characters. New accounts use this code. Configure your host's HTTPS reverse proxy and set `HOST` and `PORT` according to its routing. Keep the SQLite file and `.env` outside public static directories and out of source control. Use one server process and back up the data volume.
 
 Product lookup fetches public HTTPS product pages on the server. It reads Amazon’s main product image and current price, and other retailers’ structured product and Open Graph metadata. HTTPS redirects are checked at each hop. If a store blocks the request, omits a price, or only loads details with JavaScript, you can save the link and enter the missing details by hand.
+
+If Amazon won’t serve a product page to the app, a previous lookup or an item you saved may supply the image or price. You can also open the product in your browser, save it as **HTML only**, and use **Import from a page you can open** in the item form. The HTML is read in your browser. Only the item details are saved.

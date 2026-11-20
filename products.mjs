@@ -201,9 +201,22 @@ function standardProduct(html, base) {
   return { image, price: price ? prefix + price : "" };
 }
 
+const amazonStore = /(^|\.)amazon\.(com(?:\.(?:au|be|br|mx|sg|tr))?|co\.(?:uk|jp|za)|ae|ca|de|eg|es|fr|ie|in|it|nl|pl|sa|se)$/i;
+
+export function amazonProductKey(value) {
+  const link = webUrl(value);
+  if (!link) return "";
+  const url = new URL(link);
+  const host = url.hostname.toLowerCase();
+  if (host === "a.co" || host === "amzn.to") return host + url.pathname.replace(/\/$/, "");
+  if (!amazonStore.test(host)) return "";
+  const asin = url.pathname.match(/\/(?:dp|gp\/product|gp\/aw\/d)\/([a-z0-9]{10})(?:\/|$)/i)?.[1];
+  return asin ? host.replace(/^(?:www|m|smile)\./, "") + "/" + asin.toUpperCase() : "";
+}
+
 export function extractProduct(html, base) {
   const standard = standardProduct(html, base);
-  if (!/(^|\.)amazon\.(com(?:\.(?:au|be|br|mx|sg|tr))?|co\.(?:uk|jp|za)|ae|ca|de|eg|es|fr|ie|in|it|nl|pl|sa|se)$/i.test(new URL(base).hostname)) return standard;
+  if (!amazonStore.test(new URL(base).hostname)) return standard;
   return { image: amazonImage(html, base) || standard.image, price: amazonPrice(html) || standard.price };
 }
 

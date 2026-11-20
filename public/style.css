@@ -150,7 +150,7 @@ dialog .inline-error { margin-inline: 0; }
 .auth-panel form { padding: 25px 29px; }
 .auth-panel h2, .family-section h2, .list-heading h1 { font: 400 clamp(1.8rem, 3.5vw, 2.6rem)/1.12 var(--serif); letter-spacing: -.035em; }
 .auth-panel label { display: block; font-size: .9rem; font-weight: 700; margin-top: 14px; }
-.auth-panel input { display: block; width: 100%; min-height: 44px; margin-top: 6px; padding: 8px 11px; color: var(--text); background: white; border: 1px solid #cbd4c7; border-radius: 8px; }
+.auth-panel input, .auth-panel textarea { display: block; width: 100%; min-height: 44px; margin-top: 6px; padding: 8px 11px; color: var(--text); background: white; border: 1px solid #cbd4c7; border-radius: 8px; }
 .auth-submit, .google-button { width: 100%; }
 .auth-submit { margin-top: 19px; }
 .auth-panel .inline-error { margin-inline: 0; }
@@ -193,3 +193,8 @@ dialog .for-options input { width: auto; min-height: 0; margin: 0; }
   .item-image { width: 57px; }
   .auth-panel form { padding-inline: 19px; }
 }
+
+.name-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+.auth-panel textarea { resize: vertical; font: inherit; }
+.product-import { margin-top: 8px; }
+.product-import summary { cursor: pointer; color: var(--green); font-size: .875rem; font-weight: 700; }

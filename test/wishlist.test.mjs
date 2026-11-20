@@ -24,19 +24,23 @@ function fixture(t, overrides = {}) {
     assert.equal(result.status, expected, await result.clone().text());
     return result;
   }
-  async function signup(username) {
-    const response = await send("/api/auth/signup", { username, password, familyCode }, undefined, 201);
+  async function signup(username, profile = { firstName: username, lastName: "Test" }) {
+    const response = await send("/api/auth/signup", { username, password, familyCode, ...profile }, undefined, 201);
     return response.headers.getSetCookie()[0].split(";")[0];
   }
   return { send, signup, db };
 }
 
 test("password accounts, optional recipient email, and one personal wishlist", async (t) => {
-  const { send, signup } = fixture(t);
+  const { send, signup, db } = fixture(t);
   await send("/api/wishlists", undefined, undefined, 401);
   await send("/api/auth/signup", { username: "alex", password, familyCode: "wrong" }, undefined, 403);
   await send("/api/auth/signup", { username: "alex", password: "", familyCode }, undefined, 400);
-  const alex = await signup("alex");
+  await send("/api/auth/signup", { username: "alex", password, familyCode, firstName: "Alex" }, undefined, 400);
+  const shippingAddress = "123 Test Street\nExample City, CA 94000";
+  const alex = await signup("alex", { firstName: "Alex", lastName: "Rivera", shippingAddress });
+  const profile = db.prepare("SELECT first_name, last_name, shipping_address FROM accounts WHERE username = ?").get("alex");
+  assert.deepEqual({ ...profile }, { first_name: "Alex", last_name: "Rivera", shipping_address: shippingAddress });
   const first = await send("/api/wishlists", { for: "self" }, alex, 201);
   const { id } = await first.json();
   await send("/api/wishlists", { for: "self" }, alex, 409);
@@ -44,7 +48,7 @@ test("password accounts, optional recipient email, and one personal wishlist", a
   const { id: other } = await (await send("/api/wishlists", { for: "other", name: "Taylor" }, alex, 201)).json();
   const { mine, lists } = await (await send("/api/wishlists", undefined, alex)).json();
   assert.equal(mine, id);
-  assert.deepEqual(lists, [{ id, name: "alex" }, { id: other, name: "Taylor" }]);
+  assert.deepEqual(lists, [{ id, name: "Alex Rivera" }, { id: other, name: "Taylor" }]);
   await send("/api/auth/logout", {}, alex);
   await send("/api/wishlists", undefined, alex, 401);
   await send("/api/auth/login", { username: "alex", password: "wrong" }, undefined, 401);
@@ -53,8 +57,12 @@ test("password accounts, optional recipient email, and one personal wishlist", a
 
 test("gift editing works and recipient responses exclude purchases and claim state", async (t) => {
   const { send, signup, db } = fixture(t);
-  const [owner, buyer, observer] = await Promise.all(["Alex", "Jordan", "Sam"].map(signup));
-  db.prepare("UPDATE accounts SET name = ? WHERE username = ?").run("Jordan Kim", "Jordan");
+  const [owner, buyer, observer] = await Promise.all([
+    signup("Alex"),
+    signup("Jordan", { firstName: "Jordan", lastName: "Kim" }),
+    signup("Sam"),
+  ]);
+  assert.equal(db.prepare("SELECT shipping_address FROM accounts WHERE username = ?").get("Jordan").shipping_address, null);
   const { id } = await (await send("/api/wishlists", { for: "self" }, owner, 201)).json();
   const path = "/api/wishlists/" + id;
   const details = { name: "", notes: "", url: "https://example.com/gift", image: "https://example.com/img.png", price: "USD 13" };
@@ -82,7 +90,7 @@ test("gift editing works and recipient responses exclude purchases and claim sta
 
 test("Google OAuth binds state, sends the PKCE verifier, and associates a verified recipient", async (t) => {
   const calls = [];
-  const { send, signup } = fixture(t, { googleId: "test-client", googleSecret: "test-secret", requestGoogle: async (url, options) => {
+  const { send, signup, db } = fixture(t, { googleId: "test-client", googleSecret: "test-secret", requestGoogle: async (url, options) => {
     calls.push({ url, options });
     return Response.json(url.endsWith("/token") ? { access_token: "access" } : {
       sub: "google-account", name: "Taylor", email: "taylor@gmail.com", email_verified: true,
@@ -90,10 +98,13 @@ test("Google OAuth binds state, sends the PKCE verifier, and associates a verifi
   } });
   const creator = await signup("creator");
   const { id } = await (await send("/api/wishlists", { for: "other", name: "Taylor", email: "taylor@gmail.com" }, creator, 201)).json();
-  const flow = await send("/api/auth/google", { mode: "signup", familyCode });
+  await send("/api/auth/google", { mode: "signup", familyCode, firstName: "Taylor" }, undefined, 400);
+  const shippingAddress = "456 Test Avenue";
+  const flow = await send("/api/auth/google", { mode: "signup", familyCode, firstName: "Taylor", lastName: "Reed", shippingAddress });
   const next = new URL((await flow.clone().json()).url);
   const state = next.searchParams.get("state");
   assert.equal(next.searchParams.get("code_challenge_method"), "S256");
+  assert.ok(!next.href.includes("Taylor") && !next.href.includes("456"));
   const callback = "/auth/google/callback?code=test&state=" + state;
   await send(callback, undefined, undefined, 303);
   assert.equal(calls.length, 0);
@@ -101,6 +112,11 @@ test("Google OAuth binds state, sends the PKCE verifier, and associates a verifi
   const login = await send(callback, undefined, oauthCookie, 303);
   const session = login.headers.getSetCookie()[0].split(";")[0];
   assert.ok(calls[0].options.body.get("code_verifier"));
+  assert.deepEqual({ ...db.prepare("SELECT first_name, last_name, shipping_address FROM accounts WHERE google_sub = ?").get("google-account") }, {
+    first_name: "Taylor", last_name: "Reed", shipping_address: shippingAddress,
+  });
+  assert.deepEqual((await (await send("/api/account", undefined, session)).json()).user.name, "Taylor Reed");
+  assert.ok(!(await (await send("/api/account", undefined, session)).text()).includes(shippingAddress));
   assert.equal((await (await send("/api/wishlists", undefined, session)).json()).mine, id);
   await send(callback, undefined, oauthCookie, 303);
   assert.equal(calls.length, 2);
@@ -179,4 +195,31 @@ test("product lookup stops before contacting a private redirect target", async (
   assert.equal(blocked.price, "");
   assert.equal(blocked.image, "");
   assert.match(blocked.message, /still save the link/);
+});
+
+test("Amazon lookup recovers earlier results for the same account and product", async (t) => {
+  const image = "https://example.com/amazon.jpg";
+  let online = true;
+  const { send, signup } = fixture(t, { preview: async () =>
+    online ? { image, price: "$15" } : { image: "", price: "" },
+  });
+  const owner = await signup("cache-owner");
+  const other = await signup("cache-other");
+  const lookup = (url, cookie) => send("/api/product", { url }, cookie).then((response) => response.json());
+  const link = (asin) => "https://www.amazon.com/dp/" + asin;
+  const cachedAsin = "B000TEST01";
+  const savedAsin = "B000TEST02";
+  assert.deepEqual(await lookup(link(cachedAsin), owner), { image, price: "$15" });
+  const { id } = await (await send("/api/wishlists", { for: "self" }, owner, 201)).json();
+  await send("/api/wishlists/" + id, { action: "add", url: link(savedAsin), name: "Gift", image, price: "$20" }, owner, 201);
+
+  online = false;
+  for (const [asin, price] of [[cachedAsin, "$15"], [savedAsin, "$20"]]) {
+    const alternate = "https://amazon.com/gp/product/" + asin + "?tag=example";
+    const result = await lookup(alternate, owner);
+    assert.equal(result.image, image);
+    assert.equal(result.price, price);
+    assert.match(result.message, /reused saved/i);
+    assert.deepEqual(await lookup(alternate, other), { image: "", price: "" });
+  }
 });
