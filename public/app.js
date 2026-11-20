@@ -1,36 +1,30 @@
 const app = document.querySelector("#app");
 const editor = document.querySelector("#editor");
-const addPerson = document.querySelector("#header-add");
-
-const symbols = {
-  gift: '<path d="M4 11h16v10H4zM2 7h20v4H2zM12 7v14m0-14c-9 0-7-7-3-4l3 4c9 0 7-7 3-4z"/>',
-  heart: '<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0l-1 1-1-1a5.5 5.5 0 0 0-7.8 7.8l8.8 8.4 8.8-8.4a5.5 5.5 0 0 0 0-7.8Z"/>',
-  lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 1 1 8 0v4m-4 4v2"/>',
-  check: '<path d="m5 12 4 4L19 6"/>',
-  chevron: '<path d="m9 6 6 6-6 6"/>',
-};
-
-function icon(name, size = 19) {
-  return '<svg class="icon" width="' + size + '" height="' + size + '" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">' + symbols[name] + '</svg>';
-}
+const signOut = document.querySelector("#sign-out");
+let account;
+let authMode = "login";
+let wishlist;
+let navigation;
+let saving = false;
+let lookupTimer;
+let previewRequest;
 
 function html(value) {
-  return String(value).replace(/[&<>"']/g, (character) => ({
+  return String(value ?? "").replace(/[&<>"']/g, (character) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   })[character]);
 }
 
-function button(text, attribute, style = "button") {
-  return '<button type="button" class="' + style + '" ' + attribute + '>' + text + '</button>';
+const giftArt = '<div class="hero-art" aria-hidden="true"><div class="halo"></div><span class="spark spark-one">✦</span>' +
+  '<span class="spark spark-two">✧</span><span class="spark spark-three">✦</span><div class="parcel parcel-back"><i></i><b></b></div>' +
+  '<div class="parcel parcel-front"><i></i><b></b></div></div>';
+
+function hero(title, description) {
+  return '<section class="hero"><div class="hero-text"><h1>' + title + '</h1><p>' + description + '</p></div>' + giftArt + '</section>';
 }
 
-function empty(symbol, title, description, extra = "", first = false) {
-  return '<div class="empty' + (first ? " first-empty" : "") + '"><div class="empty-icon">' + icon(symbol, 28) +
-    '</div><h2>' + title + '</h2><p>' + description + '</p>' + extra + '</div>';
-}
-
-async function api(query = "", data, signal) {
-  const response = await fetch("/api/wishlist" + query, {
+async function api(route, data, signal) {
+  const response = await fetch("/api/" + route, {
     cache: "no-store", signal,
     ...(data && { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
   });
@@ -43,178 +37,283 @@ async function api(query = "", data, signal) {
   return result;
 }
 
-let family;
-let activeRequest;
-let saving = false;
-
-function personLink(person, index, selected) {
-  const initials = person.name.split(/\s+/).slice(0, 2).map((part) => Array.from(part)[0].toLocaleUpperCase()).join("");
-  return '<a class="person" href="#' + html(person.id) + '"' + (selected ? ' aria-current="page"' : '') +
-    '><span class="avatar shade-' + index % 4 + '">' + html(initials) + '</span><span class="person-name">' + html(person.name) +
-    (person.isOwner ? '<span class="you">You</span>' : "") + '</span>' + icon("chevron", 17) + '</a>';
+function notice(target, message) {
+  const alert = target?.querySelector("[data-error]");
+  if (alert) { alert.textContent = message; alert.hidden = !message; }
 }
 
-function listHeader(person, purchasesView) {
-  const base = "#" + html(person.id);
-  const tabs = person.isOwner ? "" : '<nav class="tabs" aria-label="Wishlist views"><a href="' + base + '"' +
-    (purchasesView ? "" : ' aria-current="page"') + '>Wishlist</a><a href="' + base + '/purchases"' +
-    (purchasesView ? ' aria-current="page"' : "") + '>' + icon("lock", 15) + ' Purchases</a></nav>';
-  const controls = person.isOwner ? button("＋ Add item", 'data-form="wish"')
-    : purchasesView ? button("＋ Record a gift", 'data-form="purchase"') : "";
-  return '<div class="list-heading"><h2>' + html(person.name) + '’s wishlist</h2>' + controls + '</div>' + tabs;
+const alertRegion = '<p class="inline-error" data-error role="alert" hidden></p>';
+
+function authPage(message = "") {
+  const signup = authMode === "signup";
+  const label = signup ? "Create account" : "Sign in";
+  const code = signup && account.requiresCode
+    ? '<label>Family access code<input name="familyCode" type="password" required></label>' : "";
+  const google = '<button class="small-button google-button" type="button" data-action="google"' +
+    (account.google ? "" : " disabled") + '><span aria-hidden="true" class="google-symbol">G</span>' +
+    (signup ? "Create account with Google" : "Sign in with Google") + '</button>' +
+    (account.google ? "" : '<p class="field-help google-help">Google sign-in is awaiting setup.</p>');
+  app.innerHTML = hero("Family wishlists", "Find gift ideas for the people you love.") +
+    '<section class="panel auth-panel"><div class="auth-tabs" aria-label="Account options">' +
+    '<button type="button" data-action="login" aria-pressed="' + !signup + '">Sign in</button>' +
+    '<button type="button" data-action="signup" aria-pressed="' + signup + '">Create account</button></div>' +
+    '<form id="auth-form"><h2>' + (signup ? "Create your account" : "Welcome back") + '</h2>' +
+    '<label>Username<input name="username" autocomplete="username" required maxlength="32"></label>' +
+    '<label>Password<input name="password" type="password" autocomplete="' + (signup ? "new-password" : "current-password") +
+    '" required maxlength="256"' + (signup ? ' minlength="10"' : '') + '></label>' +
+    (signup ? '<p class="field-help">Use at least 10 characters.</p>' : '') + code + alertRegion +
+    '<button class="button auth-submit">' + label + '</button><div class="or"><span>or</span></div>' + google + '</form></section>';
+  notice(app, message);
 }
 
-function wishRow(wish, controls = "") {
-  const note = wish.note ? "<p>" + html(wish.note) + "</p>" : "";
-  const url = wish.url ? '<a class="product-link" target="_blank" rel="noreferrer" href="' + html(wish.url) + '">Product link ↗</a>' : "";
-  return '<li class="entry"><span class="entry-icon">' + icon("gift") + '</span><div class="entry-text"><strong>' +
-    html(wish.title) + '</strong>' + note + url + '</div>' + controls + '</li>';
+function familyPage(home) {
+  const personal = home.mine ? '<a class="my-list" href="#' + home.mine + '">' : '<button class="my-list" data-action="my-list">';
+  const family = home.lists.length ? home.lists.map((list) => {
+    const initials = list.name.split(/\s+/).slice(0, 2).map((part) => Array.from(part)[0]?.toLocaleUpperCase()).join("");
+    return '<li><a class="family-card" href="#' + list.id + '"><span class="avatar" aria-hidden="true">' + html(initials) +
+      '</span><strong>' + html(list.name) + '</strong><span class="family-chevron" aria-hidden="true">›</span></a></li>';
+  }).join("") : '<li class="section-empty">No wishlists yet.</li>';
+  app.innerHTML = hero("Family wishlists", "Find gift ideas for the people you love.") +
+    personal + '<span class="personal-icon" aria-hidden="true">♡</span><span><strong>My wishlist</strong><small>' +
+    (home.mine ? "View and edit your gift ideas" : "Create your personal list") + '</small></span><span aria-hidden="true">›</span>' +
+    (home.mine ? "</a>" : "</button>") +
+    '<section class="family-section"><h2>Family wishlists</h2><ul class="family-grid">' + family +
+    '</ul><button class="add-person" data-action="add-list">＋ Add another wishlist</button></section>';
 }
 
-function purchaseRow(purchase) {
-  const buyer = purchase.isMine ? "Bought by you" : "Bought by " + html(purchase.buyerName);
-  const undo = purchase.isMine ? button("Undo", 'data-action="undoPurchase" data-id="' + html(purchase.id) + '"', "text-button") : "";
-  return '<li class="entry"><span class="entry-icon purchased">' + icon("check") + '</span><div class="entry-text"><strong>' +
-    html(purchase.title) + '</strong><p>' + buyer + '</p></div>' + undo + '</li>';
+function itemCard(item) {
+  const picture = item.image ? '<img class="item-image" src="' + html(item.image) + '" alt="" referrerpolicy="no-referrer" loading="lazy">' :
+    '<span class="item-image fallback" aria-hidden="true"><img src="/favicon.svg" alt=""></span>';
+  const badge = item.claimed ? '<span class="claimed">✓ Claimed</span>' : "";
+  const controls = [];
+  if ((wishlist.canEdit && !item.addedBy) || item.addedByMe) {
+    controls.push('<button class="small-button" data-action="edit" data-id="' + item.id + '">Edit</button>',
+      '<button class="text-button" data-action="remove" data-id="' + item.id + '">Remove</button>');
+  }
+  if (!wishlist.isOwner && !item.addedBy && (!item.claimed || item.claimedByMe)) {
+    controls.push('<button class="small-button" data-action="' + (item.claimedByMe ? "release" : "claim") +
+      '" data-id="' + item.id + '">' + (item.claimedByMe ? "Unclaim" : "Mark as claimed") + '</button>');
+  }
+  return '<li class="gift-card">' + picture + '<div class="gift-body"><div class="gift-title"><h3>' +
+    html(item.name || "Untitled item") + '</h3>' + badge + '</div>' +
+    (item.price ? '<p class="price">' + html(item.price) + '</p>' : "") +
+    (item.addedBy ? '<p class="byline">Added by ' + html(item.addedBy) + '</p>' : "") +
+    (item.notes ? '<p class="gift-notes">' + html(item.notes) + '</p>' : "") +
+    (item.url ? '<a class="product-link" href="' + html(item.url) + '" target="_blank" rel="noopener noreferrer">Visit product website</a>' : "") +
+    (controls.length ? '<div class="gift-actions">' + controls.join("") + '</div>' : "") + '</div></li>';
 }
 
-function entries(rows) {
-  return '<ul class="entries">' + rows.join("") + '</ul>';
-}
-
-function purchasesPanel(person, wishes, purchases) {
-  const bought = new Set(purchases.map((purchase) => purchase.wishId));
-  const available = wishes.filter((wish) => !bought.has(wish.id));
-  return '<div class="list-content"><p class="privacy">' + icon("lock", 16) + ' ' + html(person.name) +
-    ' can’t see this view.</p><h3>Already bought</h3>' +
-    (purchases.length ? entries(purchases.map(purchaseRow)) : '<p class="section-empty">No purchases have been recorded yet.</p>') +
-    '<h3>Wishlist ideas</h3>' + (available.length ? entries(available.map((wish) => wishRow(wish,
-      button(icon("check", 16) + " Mark bought", 'data-action="buyWish" data-id="' + html(wish.id) + '"', "small-button")))) :
-      '<p class="section-empty">No unpurchased wishlist items.</p>') + '</div>';
+function listPage() {
+  const title = wishlist.isOwner ? "My wishlist" : html(wishlist.name) + "’s wishlist";
+  const controls = (wishlist.canEdit ? '<button class="button" data-action="add-item">＋ Add item</button>' : "") +
+    (!wishlist.isOwner ? '<button class="' + (wishlist.canEdit ? "small-button" : "button") +
+      '" data-action="purchase">＋ Add a purchased gift</button>' : "");
+  app.innerHTML = '<a class="back-link" href="#home">All wishlists</a><section class="panel wishlist-panel"><div class="list-heading">' +
+    '<div><h1>' + title + '</h1><p>' + (wishlist.isOwner ? "Your gift ideas for the family." : "Claim a gift to help the family avoid duplicates.") +
+    '</p></div><div class="list-controls">' + controls + '</div></div>' + alertRegion +
+    (wishlist.items.length ? '<ul class="gift-list">' + wishlist.items.map(itemCard).join("") + '</ul>' :
+      '<div class="empty"><img class="empty-icon" src="/favicon.svg" alt=""><h2>No items yet</h2><p>' +
+      (wishlist.canEdit ? "Add your first gift idea." : "Gift ideas will appear here when they’re added.") + '</p></div>') + '</section>';
 }
 
 async function render() {
-  if (!family) return;
-  activeRequest?.abort();
-  const controller = new AbortController();
-  activeRequest = controller;
-  const [id, page] = location.hash.slice(1).split("/");
-  const person = family.people.find((member) => member.id === id) ?? family.people[0];
-  const purchasesView = Boolean(person && !person.isOwner && id === person.id && page === "purchases");
-  const section = person
-    ? listHeader(person, purchasesView) + '<p id="notice" class="inline-error" role="alert" hidden></p><div id="items"><p class="loading" role="status">Loading this list…</p></div>'
-    : empty("gift", "Start the first wishlist", "Add yourself or a family member to give their gift ideas a home.", button("＋ Add a family member", 'data-form="person"'), true);
-  app.dataset.person = person?.id ?? "";
-  app.innerHTML = '<div class="workspace"><aside aria-label="Family members"><div class="sidebar-title"><h2>Family members</h2><span>' +
-    family.people.length + '</span></div><nav class="family-list" aria-label="Wishlists">' +
-    family.people.map((member, index) => personLink(member, index, member.id === person?.id)).join("") +
-    button("＋ Add a family member", 'data-form="person"', "add-person") +
-    '</nav></aside><section class="panel list-panel" aria-label="' +
-    (person ? html(person.name) + '’s wishlist' : 'Get started') + '">' + section + '</section></div>';
-  if (!person) return;
-  const outlet = app.querySelector("#items");
-  const query = "?person=" + encodeURIComponent(person.id);
+  navigation?.abort();
+  navigation = new AbortController();
+  const { signal } = navigation;
+  signOut.hidden = !account?.user;
+  if (!account?.user) { authPage(); return; }
+  const id = location.hash.slice(1);
   try {
-    const [wishlist, purchases] = await Promise.all([
-      api(query, undefined, controller.signal),
-      purchasesView ? api(query + "&view=purchases", undefined, controller.signal) : null,
-    ]);
-    if (controller.signal.aborted) return;
-    outlet.innerHTML = purchases
-      ? purchasesPanel(person, wishlist.wishes, purchases.purchases)
-      : wishlist.wishes.length
-        ? '<div class="list-content">' + entries(wishlist.wishes.map((wish) => wishRow(wish))) + '</div>'
-        : empty("heart", "No gift ideas yet", person.isOwner ? "Add something you’d love to receive." : html(person.name) + " hasn’t added any gift ideas yet.");
+    if (/^[a-f0-9-]{36}$/.test(id)) {
+      const result = await api("wishlists/" + id, undefined, signal);
+      if (!signal.aborted) { wishlist = result; listPage(); }
+    } else {
+      const home = await api("wishlists", undefined, signal);
+      if (!signal.aborted) { wishlist = null; familyPage(home); }
+    }
   } catch (error) {
-    if (!controller.signal.aborted) outlet.innerHTML = '<div class="empty"><p role="alert">' + html(error.message) +
-      '</p>' + button("Try again", 'data-action="refresh"', "small-button") + '</div>';
+    if (signal.aborted) return;
+    if (error.status === 401) { await start(); return; }
+    app.innerHTML = '<section class="panel empty"><h2>Couldn’t open this page</h2><p role="alert">' + html(error.message) +
+      '</p><a href="#home" class="small-button">All wishlists</a></section>';
   }
 }
 
-const giftInput = '<label>Gift name<input name="title" placeholder="e.g. A new jigsaw puzzle" autofocus required maxlength="160"></label>';
-const forms = {
-  person: {
-    title: "Add a family member", label: "Add person", action: "addPerson",
-    fields: '<label>Display name<input name="name" placeholder="e.g. Aunt Jamie" autofocus required maxlength="80"></label>' +
-      '<label>Recipient’s ChatGPT sign-in email<input name="email" type="email" required maxlength="254" placeholder="name@example.com" aria-describedby="email-help"></label>' +
-      '<p class="field-help" id="email-help">Use the email they’ll sign in with so they can add wishes and their purchases stay hidden.</p>' +
-      button("Use my email", 'data-action="myEmail"', "text-button fill-email"),
-  },
-  wish: {
-    title: "Add a gift idea", label: "Add item", action: "addWish",
-    fields: giftInput + '<label>Product link <span>Optional</span><input type="url" name="url" maxlength="2048" placeholder="https://…"></label>' +
-      '<label>Notes <span>Optional</span><textarea name="note" maxlength="500" rows="3" placeholder="Size, color, or anything helpful"></textarea></label>',
-  },
-  purchase: { title: "Record a gift", label: "Record gift", action: "addPurchase", fields: giftInput },
-};
-
-function openForm(spec) {
-  if (!spec || saving || editor.open) return;
-  editor.dataset.action = spec.action;
-  editor.dataset.person = app.dataset.person ?? "";
-  editor.innerHTML = '<form><div class="dialog-heading"><h2 id="editor-title">' + spec.title + '</h2>' +
-    button("×", 'aria-label="Close" data-action="close"', "icon-button") + '</div>' + spec.fields +
-    '<p class="inline-error" role="alert" hidden></p><div class="dialog-actions">' +
-    button("Cancel", 'data-action="close"', "small-button") + '<button class="button">' + spec.label + '</button></div></form>';
+function modal(title, fields, submit, type) {
+  if (editor.open) editor.close();
+  editor.dataset.type = type;
+  editor.innerHTML = '<form><div class="dialog-heading"><h2 id="editor-title">' + title + '</h2>' +
+    '<button type="button" data-action="close" class="icon-button" aria-label="Close">×</button></div>' +
+    fields + alertRegion + '<div class="dialog-actions"><button type="button" class="small-button" data-action="close">Cancel</button>' +
+    '<button class="button">' + submit + '</button></div></form>';
   editor.showModal();
 }
 
-async function save(data, form) {
+function createListForm(personal = false) {
+  modal("Add another wishlist",
+    '<fieldset class="for-options"><legend>Who is this wishlist for?</legend>' +
+    '<label><input type="radio" name="for" value="self" checked> Myself</label>' +
+    '<label><input type="radio" name="for" value="other"> Someone else</label></fieldset>' +
+    '<div id="recipient-fields" hidden><label>Recipient name<input name="name" maxlength="100"></label>' +
+    '<label>Recipient email <span>Optional</span><input type="email" name="email" maxlength="254"></label>' +
+    '<p class="field-help">A matching verified Google account can take ownership of this list.</p></div>', "Create wishlist", "list");
+  if (personal) editor.querySelector('input[value="self"]').focus();
+}
+
+function itemForm(action, item = {}) {
+  const input = (name, label, type = "text") => '<label>' + label + '<input name="' + name + '" type="' + type + '" value="' + html(item[name]) + '"></label>';
+  modal(action === "edit" ? "Edit item" : action === "purchase" ? "Add a purchased gift" : "Add item",
+    input("name", "Item name") + input("url", "Website link", "url") +
+    '<p class="field-help" id="product-info" role="status">Paste a product link to look up its image and price.</p>' +
+    '<div class="item-fields">' + input("price", "Price") + input("image", "Image link", "url") + '</div>' +
+    '<label>Notes<textarea name="notes" rows="4">' + html(item.notes) + '</textarea></label>',
+    action === "edit" ? "Save changes" : "Add item", action);
+  editor.dataset.item = item.id ?? "";
+  for (const name of ["image", "price"]) {
+    const field = editor.querySelector('[name="' + name + '"]');
+    field.dataset.auto = field.value;
+  }
+  editor.querySelector('[name="name"]').focus();
+}
+
+function schedulePreview(input) {
+  clearTimeout(lookupTimer);
+  previewRequest?.abort();
+  if (!input.value.trim() || !input.validity.valid) return;
+  const url = input.value;
+  const form = input.form;
+  const info = form.querySelector("#product-info");
+  lookupTimer = setTimeout(async () => {
+    previewRequest = new AbortController();
+    const { signal } = previewRequest;
+    const fields = ["image", "price"].map((name) => {
+      const target = form.elements.namedItem(name);
+      return { target, original: target.value };
+    });
+    info.textContent = "Looking for product details…";
+    try {
+      const metadata = await api("product", { url }, signal);
+      if (signal.aborted || input.value !== url || !editor.open) return;
+      for (const { target, original } of fields) {
+        if (target.value === original && metadata[target.name] && (!original || target.dataset.auto === original)) {
+          target.value = metadata[target.name];
+          target.dataset.auto = target.value;
+        }
+      }
+      info.textContent = metadata.image || metadata.price ? "Product details found. You can edit them below." : "No product details found. You can fill them in below.";
+    } catch {
+      if (!signal.aborted) info.textContent = "Product lookup unavailable. You can fill in the details below.";
+    }
+  }, 350);
+}
+
+async function run(target, task) {
   if (saving) return;
   saving = true;
-  const controls = [...(form ?? app).querySelectorAll("button")];
-  const alert = form?.querySelector("[role=alert]") ?? app.querySelector("#notice");
-  if (alert) alert.hidden = true;
-  controls.forEach((control) => { control.disabled = true; });
-  try {
-    const result = await api("", data);
-    if (form) editor.close();
-    if (data.action === "addPerson") {
-      family = await api();
-      history.replaceState(null, "", "#" + result.id);
-    }
-    await render();
-  } catch (error) {
-    const visibleAlert = alert?.isConnected ? alert : app.querySelector("#notice");
-    if (visibleAlert) { visibleAlert.textContent = error.message; visibleAlert.hidden = false; }
-  } finally {
+  notice(target, "");
+  const buttons = [...target.querySelectorAll("button:not(:disabled)")];
+  buttons.forEach((button) => { button.disabled = true; });
+  try { await task(); }
+  catch (error) { notice(target, error.message); }
+  finally {
     saving = false;
-    controls.forEach((control) => { control.disabled = false; });
+    buttons.forEach((button) => { button.disabled = false; });
   }
 }
 
+async function itemAction(data) {
+  const id = wishlist.id;
+  await api("wishlists/" + id, data);
+  if (editor.open) editor.close();
+  await render();
+}
+
+editor.addEventListener("input", (event) => {
+  if (event.target.name === "url") schedulePreview(event.target);
+  if (["image", "price"].includes(event.target.name)) delete event.target.dataset.auto;
+});
+editor.addEventListener("change", (event) => {
+  if (event.target.name !== "for") return;
+  const other = event.target.value === "other";
+  editor.querySelector("#recipient-fields").hidden = !other;
+  editor.querySelector('[name="name"]').required = other;
+});
+editor.addEventListener("close", () => { clearTimeout(lookupTimer); previewRequest?.abort(); });
+editor.addEventListener("cancel", (event) => { if (saving) event.preventDefault(); });
 editor.addEventListener("submit", (event) => {
   event.preventDefault();
-  void save({ ...Object.fromEntries(new FormData(event.target)), action: editor.dataset.action, personId: editor.dataset.person }, event.target);
+  const fields = Object.fromEntries(new FormData(event.target));
+  const type = editor.dataset.type;
+  void run(editor, async () => {
+    if (type === "list") {
+      const { id } = await api("wishlists", fields);
+      editor.close();
+      location.hash = id;
+    } else {
+      await itemAction({ ...fields, action: type, itemId: editor.dataset.item });
+    }
+  });
 });
-editor.addEventListener("cancel", (event) => { if (saving) event.preventDefault(); });
-window.addEventListener("hashchange", () => { if (!saving && editor.open) editor.close(); void render(); });
+app.addEventListener("submit", (event) => {
+  if (event.target.id !== "auth-form") return;
+  event.preventDefault();
+  void run(app, async () => {
+    const data = Object.fromEntries(new FormData(event.target));
+    const { user } = await api("auth/" + authMode, data);
+    account.user = user;
+    location.hash = "home";
+    await render();
+  });
+});
 document.addEventListener("click", (event) => {
-  const control = event.target.closest("button[data-form], button[data-action]");
-  if (!control) return;
-  const { form, action, id } = control.dataset;
-  const personId = app.dataset.person;
-  if (form) openForm(forms[form]);
-  if (action === "close" && !saving) editor.close();
-  if (action === "myEmail") control.form.elements.namedItem("email").value = family.viewerEmail;
-  if (action === "buyWish") void save({ action, personId, wishId: id });
-  if (action === "undoPurchase") void save({ action, personId, purchaseId: id });
-  if (action === "refresh") void render();
+  const button = event.target.closest("button[data-action]");
+  if (!button) return;
+  const { action, id } = button.dataset;
+  if (action === "close") editor.close();
+  if (action === "login" || action === "signup") { authMode = action; authPage(); }
   if (action === "retry") void start();
+  if (action === "google") void run(app, async () => {
+    const familyCode = button.form.elements.namedItem("familyCode")?.value;
+    const { url } = await api("auth/google", { mode: authMode, familyCode });
+    location.assign(url);
+  });
+  if (action === "logout") void run(app, async () => {
+    await api("auth/logout", {});
+    account.user = null;
+    authMode = "login";
+    location.hash = "home";
+    await render();
+  });
+  if (action === "add-list" || action === "my-list") createListForm(action === "my-list");
+  if (action === "add-item" || action === "purchase") itemForm(action === "purchase" ? "purchase" : "add");
+  if (action === "edit") itemForm("edit", wishlist.items.find((item) => item.id === id));
+  if (action === "remove") {
+    modal("Remove this item?", "<p>This item will be removed from the wishlist.</p>", "Remove item", "remove");
+    editor.dataset.item = id;
+  }
+  if (action === "claim" || action === "release") void run(app, async () => {
+    try { await itemAction({ action, itemId: id }); }
+    catch (error) { if (error.status === 409) await render(); throw error; }
+  });
+});
+window.addEventListener("hashchange", () => {
+  if (editor.open) editor.close();
+  if (account) void render();
 });
 
 async function start() {
   try {
-    family = await api();
-    addPerson.hidden = false;
-    await render();
+    account = await api("account");
+    const status = new URLSearchParams(location.search).get("auth");
+    if (account.user || !status) await render();
+    else {
+      history.replaceState(null, "", "/");
+      if (status === "signup") authMode = "signup";
+      authPage(status === "signup" ? "Create an account with this Google account first." : "Google sign-in couldn’t be completed. Try again.");
+    }
   } catch (error) {
-    const signedOut = error.status === 401;
-    const control = signedOut
-      ? '<a class="button" href="/signin-with-chatgpt?return_to=%2F" target="_top">Sign in with ChatGPT</a>'
-      : button("Try again", 'data-action="retry"');
-    app.innerHTML = '<section class="panel">' + empty("gift", signedOut ? "Sign in to see the lists" : "Couldn’t open the wishlists", html(error.message), control) + '</section>';
+    app.innerHTML = '<section class="panel empty"><h2>Couldn’t load the wishlist</h2><p role="alert">' + html(error.message) +
+      '</p><button class="small-button" data-action="retry">Try again</button></section>';
   }
 }
-
 void start();

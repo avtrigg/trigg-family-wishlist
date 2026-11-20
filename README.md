@@ -1,19 +1,30 @@
 # Trigg Family Wishlist
 
-An invite-only family gift list. Family members can create recipient profiles, browse wishlists, and add gifts to their own lists. A separate Purchases tab lets other family members coordinate. The recipient's account cannot read the purchase endpoint or change its records.
+A shared family wishlist. Recipients can add, edit, and remove wishes. Other family members can claim wishes or record gifts they already bought. The recipient never receives claim information or purchased gifts through the wishlist API.
 
-## Accounts and sharing
+## Run locally
 
-The recipient email on a profile must match their ChatGPT sign-in email. A profile links a wishlist to an account. Site access is granted separately through Sites sharing. Keep the published Site restricted to the family and add relatives as viewers.
-
-## Build and test
-
-Use Node.js 24 or newer. The project has no npm dependencies.
+Use Node.js 24 or newer. The app uses Node's built-in SQLite and has no npm dependencies.
 
 ```sh
 npm test
+npm start
 ```
 
-The build creates the Worker at `dist/server/index.js`. The Sites hosting manifest binds the `DB` D1 database. Sites applies the SQL in `drizzle/` during publishing.
+Open http://localhost:3000. Create a username and password to try the site. For a second user, open a private browsing window and create another account.
 
-Deploy through the corresponding private Sites project. The Worker relies on Sites to supply trusted, authenticated account headers. Hosting it directly without equivalent identity verification would remove the protection on purchases.
+## Sign in with Google
+
+Copy `.env.example` to `.env`. Create a Google OAuth client of type **Web application** and register the exact redirect URI `http://localhost:3000/auth/google/callback` for local use. For production, register the deployed HTTPS origin followed by `/auth/google/callback`. Set `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` on the server. Google buttons become available when both are set.
+
+See the [Google OAuth web server setup](https://developers.google.com/identity/protocols/oauth2/web-server).
+
+## Wishlist ownership
+
+Creating a list for yourself links it to your account. Each account can own one wishlist. When you create a list for someone else, you can manage their wish items until they own the list. If you supply an email that matches a verified Gmail or Google Workspace account, the app links the list when that person creates their Google account. It also recognizes matching Google accounts that already exist. Email is optional and the app does not send email. Username-only accounts can create and own a personal list directly.
+
+## Deploy
+
+Run `npm start` on a Node.js host with a persistent volume for `DATABASE_PATH`. Set `NODE_ENV=production`, `APP_ORIGIN` to the public HTTPS origin, and `FAMILY_ACCESS_CODE` to a random shared value of at least 16 characters. New accounts use this code. Configure your host's HTTPS reverse proxy and set `HOST` and `PORT` according to its routing. Keep the SQLite file and `.env` outside public static directories and out of source control. Use one server process and back up the data volume.
+
+Product lookup reads public HTTPS page metadata. Retailer redirects, blocked requests, pages without metadata, and prices rendered only in JavaScript may need manual entry.

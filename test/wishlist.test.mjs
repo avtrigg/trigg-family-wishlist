@@ -1,95 +1,112 @@
-import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import worker from "../dist/server/index.js";
+import { createApplication } from "../application.mjs";
+import { openDatabase } from "../database.mjs";
+import { extractProduct, lookupProduct } from "../products.mjs";
 
-const accounts = {
-  owner: { id: "user-1", email: "alex@example.test", name: "Alex" },
-  buyer: { id: "user-2", email: "jordan@example.test", name: "Jordan" },
-  observer: { id: "user-3", email: "sam@example.test", name: "Sam" },
-};
+const origin = "http://localhost:3000";
+const familyCode = "private-family-test-code";
+const password = "long-test-password";
 
-function setup() {
-  const db = new DatabaseSync(":memory:");
-  db.exec(readFileSync("drizzle/0000_family.sql", "utf8"));
-  const environment = { DB: { prepare(sql) {
-    const statement = db.prepare(sql);
-    const bind = (...args) => ({
-      first: async () => statement.get(...args) ?? null,
-      all: async () => ({ results: statement.all(...args) }),
-      run: async () => statement.run(...args),
-    });
-    return { ...bind(), bind };
-  } } };
-
-  async function send(account, query = "", body) {
-    const headers = new Headers();
-    if (account) {
-      headers.set("oai-authenticated-user-id", account.id);
-      headers.set("oai-authenticated-user-email", account.email);
-      headers.set("oai-authenticated-user-full-name", account.name);
+function fixture(t, overrides = {}) {
+  const db = openDatabase(":memory:");
+  t.after(() => db.close());
+  const app = createApplication({ db, origin, familyCode, ...overrides });
+  async function send(path, body, cookie, expected = 200) {
+    const headers = new Headers(cookie ? { Cookie: cookie } : {});
+    if (body !== undefined) {
+      headers.set("Origin", origin);
+      headers.set("Content-Type", "application/json");
     }
-    if (body) headers.set("Content-Type", "application/json");
-    const request = new Request("https://wishlist.example.test/api/wishlist" + query,
-      { method: body ? "POST" : "GET", headers, body: body ? JSON.stringify(body) : undefined });
-    const result = await worker.fetch(request, environment);
-    return { status: result.status, data: await result.json(), cache: result.headers.get("Cache-Control") };
+    const result = await app(new Request(origin + path, {
+      method: body === undefined ? "GET" : "POST", headers, body: body === undefined ? undefined : JSON.stringify(body),
+    }));
+    assert.equal(result.status, expected, await result.clone().text());
+    return result;
   }
-  return { send, close: () => db.close() };
+  async function signup(username) {
+    const response = await send("/api/auth/signup", { username, password, familyCode }, undefined, 201);
+    return response.headers.getSetCookie()[0].split(";")[0];
+  }
+  return { send, signup };
 }
 
-test("family can create lists, add wishes, and browse them", async (t) => {
-  const { send, close } = setup();
-  t.after(close);
-  const { owner, buyer } = accounts;
-  assert.equal((await send(null)).status, 401);
-  const create = { action: "addPerson", name: "Alex", email: "ALEX@example.test" };
-  const created = await send(buyer, "", create);
-  assert.equal(created.status, 201);
-  assert.equal((await send(owner, "", create)).status, 409);
-
-  const personId = created.data.id;
-  const family = await send(owner);
-  assert.deepEqual(family.data.people, [{ id: personId, name: "Alex", isOwner: true }]);
-  assert.equal((await send(buyer)).data.people[0].isOwner, false);
-  const wish = { action: "addWish", personId, title: "Jigsaw puzzle", note: "500 pieces", url: "https://example.test/puzzle" };
-  assert.equal((await send(buyer, "", wish)).status, 403);
-  assert.equal((await send(owner, "", { ...wish, url: "javascript:alert(1)" })).status, 400);
-  const saved = await send(owner, "", wish);
-  assert.equal(saved.status, 201);
-  assert.deepEqual((await send(buyer, "?person=" + personId)).data, {
-    wishes: [{ id: saved.data.id, title: wish.title, note: wish.note, url: wish.url }],
-  });
+test("password accounts, optional recipient email, and one personal wishlist", async (t) => {
+  const { send, signup } = fixture(t);
+  await send("/api/wishlists", undefined, undefined, 401);
+  await send("/api/auth/signup", { username: "alex", password, familyCode: "wrong" }, undefined, 403);
+  const alex = await signup("alex");
+  const first = await send("/api/wishlists", { for: "self" }, alex, 201);
+  const { id } = await first.json();
+  await send("/api/wishlists", { for: "self" }, alex, 409);
+  await send("/api/wishlists", { for: "other" }, alex, 400);
+  const { id: other } = await (await send("/api/wishlists", { for: "other", name: "Taylor" }, alex, 201)).json();
+  const { mine, lists } = await (await send("/api/wishlists", undefined, alex)).json();
+  assert.equal(mine, id);
+  assert.deepEqual(lists, [{ id, name: "alex" }, { id: other, name: "Taylor" }]);
+  await send("/api/auth/logout", {}, alex);
+  await send("/api/wishlists", undefined, alex, 401);
+  await send("/api/auth/login", { username: "alex", password: "wrong" }, undefined, 401);
+  await send("/api/auth/login", { username: "ALEX", password });
 });
 
-test("purchase data is restricted to other family members and duplicates are prevented", async (t) => {
-  const { send, close } = setup();
-  t.after(close);
-  const { owner, buyer, observer } = accounts;
-  const { data: { id: personId } } = await send(owner, "", { action: "addPerson", name: owner.name, email: owner.email });
-  const { data: { id: wishId } } = await send(owner, "", { action: "addWish", personId, title: "Sketchbook" });
-  const query = "?person=" + personId;
-  const purchaseQuery = query + "&view=purchases";
-  const buy = { action: "buyWish", personId, wishId };
-  assert.equal((await send(owner, "", buy)).status, 403);
-  assert.equal((await send(null, purchaseQuery)).status, 401);
-  assert.equal((await send(buyer, "", buy)).status, 201);
-  assert.equal((await send(observer, "", buy)).status, 409);
-  assert.equal((await send(buyer, "", { action: "addPurchase", personId, title: "Surprise book" })).status, 201);
-  const hidden = await send(owner, purchaseQuery);
-  assert.equal(hidden.status, 403);
-  assert.equal(hidden.cache, "private, no-store");
-  assert.deepEqual((await send(owner, query)).data.wishes, [{ id: wishId, title: "Sketchbook", url: null, note: null }]);
+test("gift editing works and recipient responses exclude purchases and claim state", async (t) => {
+  const { send, signup } = fixture(t);
+  const [owner, buyer, observer] = await Promise.all(["Alex", "Jordan", "Sam"].map(signup));
+  const { id } = await (await send("/api/wishlists", { for: "self" }, owner, 201)).json();
+  const path = "/api/wishlists/" + id;
+  const details = { name: "", notes: "", url: "https://example.com/gift", image: "https://example.com/img.png", price: "USD 13" };
+  const { id: itemId } = await (await send(path, { action: "add", ...details }, owner, 201)).json();
+  await send(path, { action: "edit", itemId, name: "Puzzle" }, buyer, 403);
+  const edited = { ...details, name: "Puzzle", notes: "500 pieces", price: "USD 15" };
+  await send(path, { action: "edit", itemId, ...edited }, owner);
+  await send(path, { action: "claim", itemId }, owner, 403);
+  await send(path, { action: "claim", itemId }, buyer);
+  await send(path, { action: "claim", itemId }, observer, 409);
+  const { id: purchase } = await (await send(path, { action: "purchase", name: "Book" }, buyer, 201)).json();
+  await send(path, { action: "remove", itemId: purchase }, owner, 404);
+  const personal = await send(path, undefined, owner);
+  assert.equal(personal.headers.get("Cache-Control"), "private, no-store");
+  assert.deepEqual((await personal.json()).items, [{ id: itemId, ...edited }]);
+  const gifts = (await (await send(path, undefined, observer)).json()).items;
+  assert.equal(gifts.find((item) => item.id === itemId).claimed, 1);
+  assert.equal(gifts.find((item) => item.id === purchase).claimed, 1);
+  assert.equal(gifts.find((item) => item.id === purchase).addedBy, "Jordan");
+  await send(path, { action: "remove", itemId }, owner);
+  assert.deepEqual((await (await send(path, undefined, owner)).json()).items, []);
+});
 
-  const purchases = (await send(observer, purchaseQuery)).data.purchases;
-  assert.equal(purchases.length, 2);
-  const sketchbook = purchases.find((gift) => gift.wishId === wishId);
-  assert.equal(sketchbook.buyerName, buyer.name);
-  assert.equal(sketchbook.isMine, 0);
-  const undo = { action: "undoPurchase", personId, purchaseId: sketchbook.id };
-  assert.equal((await send(owner, "", undo)).status, 403);
-  assert.equal((await send(observer, "", undo)).status, 404);
-  assert.equal((await send(buyer, "", undo)).status, 200);
-  assert.equal((await send(observer, purchaseQuery)).data.purchases.length, 1);
+test("Google OAuth binds state, sends the PKCE verifier, and associates a verified recipient", async (t) => {
+  const calls = [];
+  const { send, signup } = fixture(t, { googleId: "test-client", googleSecret: "test-secret", requestGoogle: async (url, options) => {
+    calls.push({ url, options });
+    return Response.json(url.endsWith("/token") ? { access_token: "access" } : {
+      sub: "google-account", name: "Taylor", email: "taylor@gmail.com", email_verified: true,
+    });
+  } });
+  const creator = await signup("creator");
+  const { id } = await (await send("/api/wishlists", { for: "other", name: "Taylor", email: "taylor@gmail.com" }, creator, 201)).json();
+  const flow = await send("/api/auth/google", { mode: "signup", familyCode });
+  const next = new URL((await flow.clone().json()).url);
+  const state = next.searchParams.get("state");
+  assert.equal(next.searchParams.get("code_challenge_method"), "S256");
+  const callback = "/auth/google/callback?code=test&state=" + state;
+  await send(callback, undefined, undefined, 303);
+  assert.equal(calls.length, 0);
+  const oauthCookie = flow.headers.getSetCookie()[0].split(";")[0];
+  const login = await send(callback, undefined, oauthCookie, 303);
+  const session = login.headers.getSetCookie()[0].split(";")[0];
+  assert.ok(calls[0].options.body.get("code_verifier"));
+  assert.equal((await (await send("/api/wishlists", undefined, session)).json()).mine, id);
+  await send(callback, undefined, oauthCookie, 303);
+  assert.equal(calls.length, 2);
+});
+
+test("product preview extracts public page metadata and skips loopback targets", async () => {
+  const base = "https://example.com/gift";
+  const source = '<script type="application/ld+json">{"@type":"Product","image":"/gift.png","offers":{"price":"14.99","priceCurrency":"USD"}}</script>';
+  assert.deepEqual(extractProduct(source, base), { image: "https://example.com/gift.png", price: "USD 14.99" });
+  assert.deepEqual(extractProduct('<meta content="https://example.com/a.png?x=y&amp;z=1" property="og:image">', base),
+    { image: "https://example.com/a.png?x=y&z=1", price: "" });
+  assert.deepEqual(await lookupProduct("https://127.0.0.1/"), { image: "", price: "" });
 });

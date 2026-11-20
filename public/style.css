@@ -141,3 +141,55 @@ dialog .inline-error { margin-inline: 0; }
 
 [hidden] { display: none !important; }
 .icon { display: inline-block; flex: none; vertical-align: middle; }
+
+.auth-panel, .family-section, .wishlist-panel { margin-bottom: 60px; }
+.auth-panel { width: min(100%, 440px); margin-inline: auto; }
+.auth-tabs { display: grid; grid-template-columns: 1fr 1fr; border-bottom: 1px solid var(--line); }
+.auth-tabs button { border: 0; border-bottom: 2px solid transparent; background: none; color: var(--muted); font-weight: 700; padding: 13px; }
+.auth-tabs button[aria-pressed=true] { border-color: var(--green); color: var(--green); }
+.auth-panel form { padding: 25px 29px; }
+.auth-panel h2, .family-section h2, .list-heading h1 { font: 400 clamp(1.8rem, 3.5vw, 2.6rem)/1.12 var(--serif); letter-spacing: -.035em; }
+.auth-panel label { display: block; font-size: .9rem; font-weight: 700; margin-top: 14px; }
+.auth-panel input { display: block; width: 100%; min-height: 44px; margin-top: 6px; padding: 8px 11px; color: var(--text); background: white; border: 1px solid #cbd4c7; border-radius: 8px; }
+.auth-submit, .google-button { width: 100%; }
+.auth-submit { margin-top: 19px; }
+.auth-panel .inline-error { margin-inline: 0; }
+.or { display: flex; align-items: center; gap: 12px; margin: 13px 0; color: var(--muted); font-size: .875rem; }
+.or::before, .or::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+.google-symbol { color: #1a64ca; font-weight: 850; font-size: 1rem; }
+.google-help { text-align: center; }
+.my-list { display: flex; align-items: center; gap: 14px; width: 100%; padding: 14px 18px; color: var(--text); background: var(--sage); border: 1px solid #d0ddcd; border-radius: 14px; text-align: left; text-decoration: none; }
+.my-list:hover { background: #dce9d9; }
+.my-list strong { display: block; font-size: 1.1rem; }
+.my-list small { color: var(--muted); font-size: .875rem; }
+.personal-icon { display: grid; place-items: center; width: 43px; height: 43px; border-radius: 11px; color: var(--green); background: #f5faf2; font-size: 1.55rem; }
+.my-list > :last-child, .family-chevron { margin-left: auto; font-size: 1.55rem; }
+.family-section { margin-top: 29px; }
+.family-section h2 { font-size: 2rem; }
+.family-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 245px), 1fr)); gap: 10px; list-style: none; margin: 13px 0; padding: 0; }
+.family-card { display: flex; align-items: center; gap: 10px; padding: 12px; background: var(--white); border: 1px solid var(--line); border-radius: 12px; text-decoration: none; overflow-wrap: anywhere; }
+.family-card:hover { background: var(--sage); }
+.back-link { display: inline-block; font-weight: 700; text-underline-offset: 3px; margin-block: 23px 12px; }
+.list-controls, .gift-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.gift-list { list-style: none; margin: 0; padding: 3px 25px 22px; }
+.gift-card { display: flex; align-items: flex-start; gap: 15px; border-top: 1px solid var(--line); padding: 17px 0; }
+.item-image { width: 90px; aspect-ratio: 1; object-fit: contain; flex: none; background: var(--sage); border-radius: 10px; }
+.item-image.fallback { display: grid; place-items: center; }
+.item-image.fallback img { width: 37px; }
+.gift-body { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.gift-title { display: flex; flex-wrap: wrap; align-items: center; gap: 7px 11px; }
+.gift-title h3 { font-size: 1.07rem; }
+.claimed { border-radius: 8px; padding: 2px 8px; color: var(--green); background: var(--sage); font-size: .875rem; font-weight: 720; }
+.price { font-weight: 700; margin-top: 3px; }
+.byline, .gift-notes { color: var(--muted); margin-top: 3px; white-space: pre-wrap; }
+.gift-actions { margin-top: 7px; }
+.for-options { display: flex; gap: 9px 22px; flex-wrap: wrap; border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; }
+.for-options label { display: flex; align-items: center; gap: 6px; margin: 0; }
+dialog .for-options input { width: auto; min-height: 0; margin: 0; }
+.item-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 10px; }
+@media (max-width: 595px) {
+  .gift-list { padding-inline: 15px; }
+  .gift-card { gap: 10px; }
+  .item-image { width: 57px; }
+  .auth-panel form { padding-inline: 19px; }
+}

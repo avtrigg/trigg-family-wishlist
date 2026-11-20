@@ -2,8 +2,9 @@
   "name": "trigg-family-wishlist",
   "private": true,
   "type": "module",
+  "engines": { "node": ">=24" },
   "scripts": {
-    "build": "node build.mjs",
-    "test": "npm run build && node --test"
+    "start": "node --env-file-if-exists=.env server.mjs",
+    "test": "node --test"
   }
 }
