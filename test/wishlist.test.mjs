@@ -28,7 +28,7 @@ function fixture(t, overrides = {}) {
     const response = await send("/api/auth/signup", { username, password, familyCode }, undefined, 201);
     return response.headers.getSetCookie()[0].split(";")[0];
   }
-  return { send, signup };
+  return { send, signup, db };
 }
 
 test("password accounts, optional recipient email, and one personal wishlist", async (t) => {
@@ -51,8 +51,9 @@ test("password accounts, optional recipient email, and one personal wishlist", a
 });
 
 test("gift editing works and recipient responses exclude purchases and claim state", async (t) => {
-  const { send, signup } = fixture(t);
+  const { send, signup, db } = fixture(t);
   const [owner, buyer, observer] = await Promise.all(["Alex", "Jordan", "Sam"].map(signup));
+  db.prepare("UPDATE accounts SET name = ? WHERE username = ?").run("Jordan Kim", "Jordan");
   const { id } = await (await send("/api/wishlists", { for: "self" }, owner, 201)).json();
   const path = "/api/wishlists/" + id;
   const details = { name: "", notes: "", url: "https://example.com/gift", image: "https://example.com/img.png", price: "USD 13" };
@@ -70,8 +71,10 @@ test("gift editing works and recipient responses exclude purchases and claim sta
   assert.deepEqual((await personal.json()).items, [{ id: itemId, ...edited }]);
   const gifts = (await (await send(path, undefined, observer)).json()).items;
   assert.equal(gifts.find((item) => item.id === itemId).claimed, 1);
+  assert.equal(gifts.find((item) => item.id === itemId).claimedBy, "Jordan");
   assert.equal(gifts.find((item) => item.id === purchase).claimed, 1);
-  assert.equal(gifts.find((item) => item.id === purchase).addedBy, "Jordan");
+  assert.equal(gifts.find((item) => item.id === purchase).claimedBy, "Jordan");
+  assert.equal(gifts.find((item) => item.id === purchase).addedBy, "Jordan Kim");
   await send(path, { action: "remove", itemId }, owner);
   assert.deepEqual((await (await send(path, undefined, owner)).json()).items, []);
 });

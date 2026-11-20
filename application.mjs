@@ -68,9 +68,15 @@ export function createApplication(options) {
       SELECT id, name, url, notes, image, price FROM items WHERE list_id = ? AND added_by IS NULL ORDER BY rowid DESC
     `).all(list.id) : db.prepare(`
       SELECT i.id, i.name, i.url, i.notes, i.image, i.price, i.claimed_by IS NOT NULL AS claimed,
-        i.claimed_by = ? AS claimedByMe, i.added_by = ? AS addedByMe, a.name AS addedBy
-      FROM items i LEFT JOIN accounts a ON a.id = i.added_by WHERE i.list_id = ? ORDER BY i.rowid DESC
-    `).all(user.id, user.id, list.id);
+        i.claimed_by = ? AS claimedByMe, i.added_by = ? AS addedByMe, a.name AS addedBy,
+        claimant.name AS claimantName
+      FROM items i LEFT JOIN accounts a ON a.id = i.added_by
+      LEFT JOIN accounts claimant ON claimant.id = i.claimed_by
+      WHERE i.list_id = ? ORDER BY i.rowid DESC
+    `).all(user.id, user.id, list.id).map(({ claimantName, ...item }) => ({
+      ...item,
+      claimedBy: claimantName?.trim().split(/\s+/)[0] || null,
+    }));
     return json({ id: list.id, name: list.name, isOwner, canEdit, items });
   }
 

@@ -84,7 +84,7 @@ function familyPage(home) {
 function itemCard(item) {
   const picture = item.image ? '<img class="item-image" src="' + html(item.image) + '" alt="" referrerpolicy="no-referrer" loading="lazy">' :
     '<span class="item-image fallback" aria-hidden="true"><img src="/favicon.svg" alt=""></span>';
-  const badge = item.claimed ? '<span class="claimed">✓ Claimed</span>' : "";
+  const badge = item.claimedBy ? '<span class="claimed">Claimed by ' + html(item.claimedBy) + '</span>' : "";
   const controls = [];
   if ((wishlist.canEdit && !item.addedBy) || item.addedByMe) {
     controls.push('<button class="small-button" data-action="edit" data-id="' + item.id + '">Edit</button>',
