@@ -32,3 +32,7 @@ Product lookup fetches public HTTPS product pages on the server. It reads Amazon
 If Amazon won’t serve a product page to the app, a previous lookup or an item you saved may supply the image or price. You can also open the product in your browser, save it as **HTML only**, and use **Import from a page you can open** in the item form. The HTML is read in your browser. Only the item details are saved.
 
 On Node.js 24.5 or newer, Amazon lookups use `HTTPS_PROXY` or `https_proxy` when one is configured. The app prefers HTTP/2 when the installed curl supports it. Other retailer links still use a direct connection with public-address checks.
+
+## Chrome extension
+
+Load the `chrome-extension/` folder as an unpacked Chrome extension. Open it from a product page to read the name, price, and image directly from the page and review the item in your wishlist. See [the extension setup](chrome-extension/README.md).

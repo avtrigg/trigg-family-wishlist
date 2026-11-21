@@ -8,6 +8,8 @@ let navigation;
 let saving = false;
 let lookupTimer;
 let productLookup;
+let extensionDraft;
+const extensionDraftKey = "wishlist-extension-draft";
 
 function html(value) {
   return String(value ?? "").replace(/[&<>"']/g, (character) => ({
@@ -71,15 +73,19 @@ function authPage(message = "") {
   notice(app, message);
 }
 
-function familyPage(home) {
+function familyPage(home, draft = null) {
   const personal = home.mine ? '<a class="my-list" href="#' + home.mine + '">' : '<button class="my-list" data-action="my-list">';
   const family = home.lists.length ? home.lists.map((list) => {
     const initials = list.name.split(/\s+/).slice(0, 2).map((part) => Array.from(part)[0]?.toLocaleUpperCase()).join("");
     return '<li><a class="family-card" href="#' + list.id + '"><span class="avatar" aria-hidden="true">' + html(initials) +
       '</span><strong>' + html(list.name) + '</strong><span class="family-chevron" aria-hidden="true">›</span></a></li>';
   }).join("") : '<li class="section-empty">No wishlists yet.</li>';
+  const importPanel = draft ? '<section class="panel list-heading"><div><h2>Add your browser item</h2>' +
+    '<p>Create your wishlist to add ' + html(draft.name || "this item") + '.</p>' + alertRegion + '</div>' +
+    '<div class="list-controls"><button class="small-button" data-action="discard-import">Discard</button>' +
+    '<button class="button" data-action="create-import-list">Create my wishlist</button></div></section>' : "";
   app.innerHTML = hero("Family wishlists", "Find gift ideas for the people you love.") +
-    personal + '<span class="personal-icon" aria-hidden="true">♡</span><span><strong>My wishlist</strong><small>' +
+    importPanel + personal + '<span class="personal-icon" aria-hidden="true">♡</span><span><strong>My wishlist</strong><small>' +
     (home.mine ? "View and edit your gift ideas" : "Create your personal list") + '</small></span><span aria-hidden="true">›</span>' +
     (home.mine ? "</a>" : "</button>") +
     '<section class="family-section"><h2>Family wishlists</h2><ul class="family-grid">' + family +
@@ -121,14 +127,71 @@ function listPage() {
       (wishlist.canEdit ? "Add your first gift idea." : "Gift ideas will appear here when they’re added.") + '</p></div>') + '</section>';
 }
 
+function setExtensionDraft(draft) {
+  extensionDraft = draft;
+  try {
+    if (draft) sessionStorage.setItem(extensionDraftKey, JSON.stringify(draft));
+    else sessionStorage.removeItem(extensionDraftKey);
+  } catch { /* The draft remains available in memory. */ }
+}
+
+function parseExtensionDraft(raw) {
+  if (!raw || raw.length > 12_000) return null;
+  try {
+    const draft = JSON.parse(raw);
+    const field = (name, max) => typeof draft?.[name] === "string" ? draft[name].trim().slice(0, max) : "";
+    const url = normalizeWebsite(field("url", 4096));
+    if (!url) return null;
+    const image = normalizeWebsite(field("image", 4096));
+    return { name: field("name", 240), url, image: image?.startsWith("https:") ? image : "", price: field("price", 48) };
+  } catch { return null; }
+}
+
+function getExtensionDraft() {
+  if (location.hash.startsWith("#import=")) {
+    const raw = new URLSearchParams(location.hash.slice(1)).get("import");
+    history.replaceState(null, "", "#home");
+    setExtensionDraft(parseExtensionDraft(raw));
+  } else if (extensionDraft === undefined) {
+    try { extensionDraft = parseExtensionDraft(sessionStorage.getItem(extensionDraftKey)); }
+    catch { extensionDraft = null; }
+  }
+  return extensionDraft;
+}
+
 async function render() {
   navigation?.abort();
   navigation = new AbortController();
   const { signal } = navigation;
+  const draft = getExtensionDraft();
   signOut.hidden = !account?.user;
-  if (!account?.user) { authPage(); return; }
+  if (!account?.user) {
+    authPage(draft ? "Sign in or create an account to finish adding your browser item." : "");
+    return;
+  }
   const id = location.hash.slice(1);
   try {
+    if (draft) {
+      const home = await api("wishlists", undefined, signal);
+      if (signal.aborted) return;
+      if (!home.mine) {
+        wishlist = null;
+        familyPage(home, draft);
+        return;
+      }
+      const result = await api("wishlists/" + home.mine, undefined, signal);
+      if (signal.aborted) return;
+      wishlist = result;
+      if (!result.isOwner) {
+        familyPage(home, draft);
+        return;
+      }
+      history.replaceState(null, "", "#" + result.id);
+      setExtensionDraft(null);
+      listPage();
+      itemForm("add", draft);
+      return;
+    }
     if (/^[a-f0-9-]{36}$/.test(id)) {
       const result = await api("wishlists/" + id, undefined, signal);
       if (!signal.aborted) { wishlist = result; listPage(); }
@@ -402,6 +465,12 @@ document.addEventListener("click", (event) => {
     location.hash = "home";
     await render();
   });
+  if (action === "discard-import") { setExtensionDraft(null); void render(); }
+  if (action === "create-import-list") void run(app, async () => {
+    try { await api("wishlists", { for: "self" }); }
+    catch (error) { if (error.status !== 409) throw error; }
+    await render();
+  });
   if (action === "add-list" || action === "my-list") createListForm(action === "my-list");
   if (action === "add-item" || action === "purchase") itemForm(action === "purchase" ? "purchase" : "add");
   if (action === "edit") itemForm("edit", wishlist.items.find((item) => item.id === id));
@@ -420,6 +489,7 @@ window.addEventListener("hashchange", () => {
 });
 
 async function start() {
+  getExtensionDraft();
   try {
     account = await api("account");
     const status = new URLSearchParams(location.search).get("auth");

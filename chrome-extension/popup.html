@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Add to Family Wishlist</title>
+  <link rel="stylesheet" href="popup.css">
+  <script type="module" src="popup.mjs"></script>
+</head>
+<body>
+  <main>
+    <h1>Add to Family Wishlist</h1>
+    <div id="product" hidden>
+      <img id="image" referrerpolicy="no-referrer" alt="" hidden>
+      <div><p id="item-name"></p><p id="price"></p></div>
+    </div>
+    <p id="status" role="status">Reading the current page…</p>
+    <form id="share">
+      <details id="settings">
+        <summary>Wishlist address</summary>
+        <label for="address">Family wishlist URL</label>
+        <input id="address" type="url" spellcheck="false" autocomplete="off" required>
+      </details>
+      <button id="open-wishlist" disabled>Add to wishlist</button>
+    </form>
+  </main>
+</body>
+</html>
