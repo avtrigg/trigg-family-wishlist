@@ -15,8 +15,17 @@ async function initialize() {
       status.textContent = "Open a product page in this tab first.";
       return;
     }
-    const [capture] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: readProductPage });
-    product = capture?.result;
+    const read = async () => {
+      const [capture] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: readProductPage });
+      return capture?.result;
+    };
+    product = await read();
+    if (product?.url && !product.price) {
+      // Some product pages populate their buy box after the rest of the page.
+      await new Promise((resolve) => setTimeout(resolve, 650));
+      const updated = await read().catch(() => null);
+      if (updated?.url === product.url && updated.price) product.price = updated.price;
+    }
     if (!product?.url) throw new Error("No product URL found.");
     document.querySelector("#item-name").textContent = product.name || new URL(product.url).hostname;
     document.querySelector("#price").textContent = product.price;

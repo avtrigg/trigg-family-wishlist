@@ -4,16 +4,40 @@ import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import { readProductPage, wishlistImportUrl } from "../chrome-extension/product.mjs";
 
-function capture(url, fixtures = {}, scripts = []) {
+function capture(url, fixtures = {}, scripts = [], lang = "en-US") {
   const document = {
     title: "Example retailer",
-    documentElement: { lang: "en-US" },
+    documentElement: { lang },
     querySelector: (selector) => Object.entries(fixtures).find(([key]) => selector.includes(key))?.[1] ?? null,
-    querySelectorAll: () => scripts.map((script) => ({ textContent: JSON.stringify(script) })),
+    querySelectorAll: (selector) => selector.startsWith("script")
+      ? scripts.map((script) => ({ textContent: JSON.stringify(script) }))
+      : [fixtures[selector]].flat().filter(Boolean),
   };
   return JSON.parse(JSON.stringify(runInNewContext("(" + readProductPage.toString() + ")()", {
     document, location: new URL(url), URL, Intl,
   })));
+}
+
+function priceNode(offscreen, options = {}) {
+  const parts = {
+    ".a-offscreen": offscreen == null ? null : { textContent: offscreen },
+    ".a-price-whole": options.whole ? {
+      textContent: options.whole,
+      compareDocumentPosition: () => options.trailingCurrency ? 4 : 2,
+    } : null,
+    ".a-price-fraction": options.fraction ? { textContent: options.fraction } : null,
+    ".a-price-symbol": options.symbol ? { textContent: options.symbol } : null,
+    ".a-price-decimal": options.decimal ? { textContent: options.decimal } : null,
+  };
+  return {
+    querySelector: (selector) => parts[selector] ?? null,
+    closest: () => options.excluded ? {} : null,
+    checkVisibility: () => !options.hidden,
+  };
+}
+
+function section({ current = [], generic = [] }) {
+  return { querySelectorAll: (selector) => selector === ".a-price" ? generic : current };
 }
 
 test("the serialized Chrome extractor reads the selected Amazon product from the visible page", () => {
@@ -25,7 +49,7 @@ test("the serialized Chrome extractor reads the selected Amazon product from the
   };
   const product = capture("https://www.amazon.com/example/dp/B09V12JBQN?th=1#details", {
     "#productTitle": { textContent: "  Stainless   steel wire  " },
-    ".priceToPay .a-offscreen": { textContent: "$15.37" },
+    "#corePriceDisplay_desktop_feature_div": section({ current: [priceNode("$15.37")] }),
     "#landingImage": { getAttribute: (name) => attrs[name] ?? null },
   });
   assert.deepEqual(product, {
@@ -59,4 +83,42 @@ test("extension adds only temporary page access and passes an encoded draft to t
   assert.deepEqual(JSON.parse(new URLSearchParams(target.hash.slice(1)).get("import")), product);
   assert.throws(() => wishlistImportUrl("http://remote.example", product));
   assert.throws(() => wishlistImportUrl("https://host.example/another-page", product));
+});
+
+test("Amazon capture prefers a current price and skips hidden, list, unit, and subscription prices", () => {
+  const product = capture("https://www.amazon.com/dp/B09V12JBQN", {
+    "#corePriceDisplay_desktop_feature_div": [
+      section({ current: [priceNode("$80.00", { hidden: true })] }),
+      section({ generic: [priceNode("$100.00", { excluded: true }), priceNode("$0.98", { excluded: true })] }),
+    ],
+    "#apex_desktop": section({ current: [
+      priceNode("$12.03", { excluded: true }),
+      priceNode(null, { whole: "15.", fraction: "37", symbol: "$" }),
+    ] }),
+  });
+  assert.equal(product.price, "$15.37");
+});
+
+test("Amazon capture recovers a missing decimal from the split localized price", () => {
+  const product = capture("https://www.amazon.de/dp/B09V12JBQN", {
+    "#corePriceDisplay_mobile_feature_div": section({ current: [
+      priceNode("1537 €", { whole: "15", fraction: "37", symbol: "€", trailingCurrency: true }),
+    ] }),
+  }, [], "de-DE");
+  assert.equal(product.price, "15,37 €");
+});
+
+test("Amazon capture reads an unmarked buy-box price without treating other page prices as the product", () => {
+  const url = "https://www.amazon.com/dp/B09V12JBQN";
+  const available = capture(url, {
+    "#corePrice_feature_div": section({
+      generic: [priceNode("$52.00", { excluded: true }), priceNode("$28.49")],
+    }),
+  });
+  const unavailable = capture(url, {
+    "#corePrice_feature_div": section({ generic: [priceNode("$52.00", { excluded: true })] }),
+    "#relatedItems": section({ generic: [priceNode("$15.99")] }),
+  });
+  assert.equal(available.price, "$28.49");
+  assert.equal(unavailable.price, "");
 });

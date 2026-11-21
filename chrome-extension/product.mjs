@@ -40,17 +40,76 @@ export function readProductPage() {
   const offer = [product?.offers].flat().map(reference).find((entry) =>
     entry?.price != null || entry?.lowPrice != null || entry?.priceSpecification?.price != null);
 
+  function readAmazonPrice() {
+    const primarySections = [
+      "#corePriceDisplay_desktop_feature_div", "#corePriceDisplay_mobile_feature_div",
+      "#corePrice_desktop", "#corePrice_feature_div", "#corePrice_mobile_feature_div",
+      "#apex_desktop", "#apex_mobile", "#priceInsideBuyBox_feature_div",
+      "#desktop_buybox", "#mobile_buybox", "#buybox",
+    ];
+    const blockedPrice = '.a-text-price, .basisPrice, [data-a-strike="true"], .a-price-per-unit, ' +
+      '.pricePerUnit, .snsPrice, #snsPrice, #snsAccordionRow';
+    const shown = (node) => typeof node.checkVisibility !== "function" ||
+      node.checkVisibility({ visibilityProperty: true });
+
+    function localeDecimal() {
+      try {
+        return Intl.NumberFormat(document.documentElement.lang || "en").formatToParts(1.1)
+          .find((part) => part.type === "decimal")?.value || ".";
+      } catch { return "."; }
+    }
+
+    function amountFrom(node) {
+      if (!shown(node) || node.closest(blockedPrice)) return "";
+      const offscreen = clean(node.querySelector(".a-offscreen")?.textContent, 48);
+      const wholeNode = node.querySelector(".a-price-whole");
+      const whole = clean(wholeNode?.textContent, 32);
+      const fraction = clean(node.querySelector(".a-price-fraction")?.textContent, 4);
+      if (/\d/.test(whole) && /^\d{1,3}$/.test(fraction)) {
+        const displayedDecimal = clean(node.querySelector(".a-price-decimal")?.textContent, 1);
+        const decimal = /[.,]/.test(displayedDecimal) ? displayedDecimal
+          : whole.match(/[.,]$/)?.[0] || localeDecimal();
+        const amount = whole.replace(/[.,]$/, "") + decimal + fraction;
+        if (offscreen.includes(amount)) return offscreen;
+        const symbolNode = node.querySelector(".a-price-symbol");
+        const symbol = clean(symbolNode?.textContent, 8);
+        if (symbolNode && (wholeNode.compareDocumentPosition?.(symbolNode) & 4)) return amount + " " + symbol;
+        return symbol + amount;
+      }
+      if (/\d/.test(offscreen)) return offscreen;
+      const symbol = clean(node.querySelector(".a-price-symbol")?.textContent, 8);
+      if (/\d/.test(whole)) return symbol + whole;
+      return "";
+    }
+
+    const sections = primarySections.flatMap((selector) => Array.from(document.querySelectorAll(selector)).filter(shown));
+    // Prefer explicitly marked current prices before considering a generic price in the buy box.
+    for (const selector of [".priceToPay, .apexPriceToPay", ".a-price"]) {
+      for (const section of sections) {
+        for (const candidate of section.querySelectorAll(selector)) {
+          const price = amountFrom(candidate);
+          if (price) return price;
+        }
+      }
+    }
+
+    for (const selector of [
+      "#priceblock_dealprice", "#priceblock_ourprice", "#priceblock_saleprice",
+      "#price_inside_buybox", "#newBuyBoxPrice",
+    ]) {
+      const node = document.querySelector(selector);
+      const price = clean(node?.textContent, 48);
+      if (node && shown(node) && !node.closest(blockedPrice) && /\d/.test(price)) return price;
+    }
+    return "";
+  }
+
   let amazonName = "";
   let amazonPrice = "";
   const amazonImages = [];
   if (/(^|\.)amazon\.(?:com(?:\.[a-z]{2})?|co\.[a-z]{2}|[a-z]{2})$/i.test(location.hostname)) {
     amazonName = document.querySelector("#productTitle")?.textContent;
-    amazonPrice = document.querySelector(
-      "#corePriceDisplay_desktop_feature_div .priceToPay .a-offscreen, " +
-      "#corePrice_feature_div .priceToPay .a-offscreen, #corePrice_desktop .priceToPay .a-offscreen, " +
-      "#corePrice_mobile_feature_div .apexPriceToPay .a-offscreen, " +
-      "#priceblock_dealprice, #priceblock_ourprice, #priceblock_saleprice"
-    )?.textContent;
+    amazonPrice = readAmazonPrice();
     const mainImage = document.querySelector("#landingImage, #imgBlkFront, #ebooksImgBlkFront");
     if (mainImage) {
       amazonImages.push(mainImage.getAttribute("data-old-hires"));
