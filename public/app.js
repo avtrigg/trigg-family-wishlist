@@ -73,20 +73,25 @@ function authPage(message = "") {
   notice(app, message);
 }
 
+function wishlistItemCount(count) {
+  return ' <span class="wishlist-count">(' + html(count) + (count === 1 ? ' item)' : ' items)') + '</span>';
+}
+
 function familyPage(home, draft = null) {
   const personal = home.mine ? '<a class="my-list" href="#' + home.mine + '">' : '<button class="my-list" data-action="my-list">';
+  const personalCount = home.lists.find((list) => list.id === home.mine)?.itemCount ?? 0;
   const familyLists = home.lists.filter((list) => list.id !== home.mine);
   const family = familyLists.length ? familyLists.map((list) => {
     const initials = list.name.split(/\s+/).slice(0, 2).map((part) => Array.from(part)[0]?.toLocaleUpperCase()).join("");
     return '<li><a class="family-card" href="#' + list.id + '"><span class="avatar" aria-hidden="true">' + html(initials) +
-      '</span><strong>' + html(list.name) + '</strong><span class="family-chevron" aria-hidden="true">›</span></a></li>';
+      '</span><strong>' + html(list.name) + wishlistItemCount(list.itemCount) + '</strong><span class="family-chevron" aria-hidden="true">›</span></a></li>';
   }).join("") : '<li class="section-empty">No other wishlists yet.</li>';
   const importPanel = draft ? '<section class="panel list-heading"><div><h2>Add your browser item</h2>' +
     '<p>Create your wishlist to add ' + html(draft.name || "this item") + '.</p>' + alertRegion + '</div>' +
     '<div class="list-controls"><button class="small-button" data-action="discard-import">Discard</button>' +
     '<button class="button" data-action="create-import-list">Create my wishlist</button></div></section>' : "";
   app.innerHTML = hero("Family wishlists", "Find gift ideas for the people you love.") +
-    importPanel + personal + '<span class="personal-icon" aria-hidden="true">♡</span><span><strong>My wishlist</strong><small>' +
+    importPanel + personal + '<span class="personal-icon" aria-hidden="true">♡</span><span><strong>My wishlist' + wishlistItemCount(personalCount) + '</strong><small>' +
     (home.mine ? "View and edit your gift ideas" : "Create your personal list") + '</small></span><span aria-hidden="true">›</span>' +
     (home.mine ? "</a>" : "</button>") +
     '<section class="family-section"><h2>Family wishlists</h2><ul class="family-grid">' + family +
@@ -117,11 +122,14 @@ function itemCard(item) {
 
 function listPage() {
   const title = wishlist.isOwner ? "My wishlist" : html(wishlist.name) + "’s wishlist";
+  const linkAccount = wishlist.hasOwner ? "" :
+    '<button type="button" class="small-button" data-action="link-wishlist">This is my wishlist</button>';
   const controls = (wishlist.canEdit ? '<button class="button" data-action="add-item">＋ Add item</button>' : "") +
     (!wishlist.isOwner ? '<button class="' + (wishlist.canEdit ? "small-button" : "button") +
       '" data-action="purchase">＋ Add a purchased gift</button>' : "");
   app.innerHTML = '<a class="back-link" href="#home">All wishlists</a><section class="panel wishlist-panel"><div class="list-heading">' +
-    '<div><h1>' + title + '</h1><p>' + (wishlist.isOwner ? "Your gift ideas for the family." : "Claim a gift to help the family avoid duplicates.") +
+    '<div><div class="wishlist-title"><h1>' + title + '</h1>' + linkAccount + '</div><p>' +
+    (wishlist.isOwner ? "Your gift ideas for the family." : "Claim a gift to help the family avoid duplicates.") +
     '</p></div><div class="list-controls">' + controls + '</div></div>' + alertRegion +
     (wishlist.items.length ? '<ul class="gift-list">' + wishlist.items.map(itemCard).join("") + '</ul>' :
       '<div class="empty"><img class="empty-icon" src="/favicon.svg" alt=""><h2>No items yet</h2><p>' +
@@ -406,6 +414,8 @@ editor.addEventListener("submit", (event) => {
       const { id } = await api("wishlists", Object.fromEntries(new FormData(form)));
       editor.close();
       location.hash = id;
+    } else if (type === "link-wishlist") {
+      await itemAction({ action: type }, listId);
     } else {
       if (type === "remove") {
         await itemAction({ action: type, itemId: item }, listId);
@@ -473,6 +483,10 @@ document.addEventListener("click", (event) => {
     await render();
   });
   if (action === "add-list" || action === "my-list") createListForm(action === "my-list");
+  if (action === "link-wishlist") {
+    modal("Link this wishlist?", '<p>Link the wishlist for <strong>' + html(wishlist.name) +
+      '</strong> to your account. It will appear under My wishlist.</p>', "Link wishlist", action);
+  }
   if (action === "add-item" || action === "purchase") itemForm(action === "purchase" ? "purchase" : "add");
   if (action === "edit") itemForm("edit", wishlist.items.find((item) => item.id === id));
   if (action === "remove") {

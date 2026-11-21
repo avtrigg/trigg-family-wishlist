@@ -48,11 +48,44 @@ test("password accounts, optional recipient email, and one personal wishlist", a
   const { id: other } = await (await send("/api/wishlists", { for: "other", name: "Taylor" }, alex, 201)).json();
   const { mine, lists } = await (await send("/api/wishlists", undefined, alex)).json();
   assert.equal(mine, id);
-  assert.deepEqual(lists, [{ id, name: "Alex Rivera" }, { id: other, name: "Taylor" }]);
+  assert.deepEqual(lists, [
+    { id, name: "Alex Rivera", itemCount: 0, hasOwner: true },
+    { id: other, name: "Taylor", itemCount: 0, hasOwner: false },
+  ]);
   await send("/api/auth/logout", {}, alex);
   await send("/api/wishlists", undefined, alex, 401);
   await send("/api/auth/login", { username: "alex", password: "wrong" }, undefined, 401);
   await send("/api/auth/login", { username: "ALEX", password });
+});
+
+test("linking an unowned wishlist keeps its gifts and respects existing ownership", async (t) => {
+  const { send, signup } = fixture(t);
+  const creator = await signup("creator");
+  const recipient = await signup("recipient");
+  const { id } = await (await send("/api/wishlists", { for: "other", name: "Recipient" }, creator, 201)).json();
+  const { id: other } = await (await send("/api/wishlists", { for: "other", name: "Another recipient" }, creator, 201)).json();
+  const { id: reserved } = await (await send("/api/wishlists", {
+    for: "other", name: "Reserved", email: "reserved@example.com",
+  }, creator, 201)).json();
+  const path = "/api/wishlists/" + id;
+  const link = { action: "link-wishlist" };
+  assert.equal((await (await send(path, undefined, recipient)).json()).hasOwner, false);
+  await send("/api/wishlists/" + reserved, link, recipient, 403);
+  await send(path, link, undefined, 401);
+  await send(path, { action: "add", name: "Puzzle" }, creator, 201);
+  await send(path, { action: "purchase", name: "Surprise" }, creator, 201);
+  await send(path, link, recipient);
+  await send(path, link, recipient);
+  await send(path, link, creator, 409);
+  await send("/api/wishlists/" + other, link, recipient, 409);
+  await send(path, { action: "add", name: "Another gift" }, creator, 403);
+  const personal = await (await send(path, undefined, recipient)).json();
+  assert.equal(personal.isOwner, true);
+  assert.equal(personal.hasOwner, true);
+  assert.deepEqual(personal.items.map((item) => item.name), ["Puzzle"]);
+  const home = await (await send("/api/wishlists", undefined, recipient)).json();
+  assert.equal(home.mine, id);
+  assert.deepEqual(home.lists.find((list) => list.id === id), { id, name: "Recipient", itemCount: 1, hasOwner: true });
 });
 
 test("gift editing works and recipient responses exclude purchases and claim state", async (t) => {
@@ -84,6 +117,10 @@ test("gift editing works and recipient responses exclude purchases and claim sta
   assert.equal(gifts.find((item) => item.id === purchase).claimed, 1);
   assert.equal(gifts.find((item) => item.id === purchase).claimedBy, "Jordan");
   assert.equal(gifts.find((item) => item.id === purchase).addedBy, "Jordan Kim");
+  const ownerHome = await (await send("/api/wishlists", undefined, owner)).json();
+  const observerHome = await (await send("/api/wishlists", undefined, observer)).json();
+  assert.equal(ownerHome.lists.find((list) => list.id === id).itemCount, 1);
+  assert.equal(observerHome.lists.find((list) => list.id === id).itemCount, 2);
   await send(path, { action: "remove", itemId }, owner);
   assert.deepEqual((await (await send(path, undefined, owner)).json()).items, []);
 });

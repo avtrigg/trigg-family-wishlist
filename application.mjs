@@ -33,10 +33,16 @@ export function createApplication(options) {
   }
 
   function home(user) {
-    const lists = db.prepare("SELECT id, name, owner_id FROM lists ORDER BY name COLLATE NOCASE, id").all();
+    const lists = db.prepare(`
+      SELECT id, name, owner_id, (
+        SELECT COUNT(*) FROM items
+        WHERE list_id = lists.id AND (lists.owner_id IS NOT ? OR added_by IS NULL)
+      ) AS itemCount
+      FROM lists ORDER BY name COLLATE NOCASE, id
+    `).all(user.id);
     return json({
       user, mine: lists.find((list) => list.owner_id === user.id)?.id ?? null,
-      lists: lists.map(({ id, name }) => ({ id, name })),
+      lists: lists.map(({ id, name, itemCount, owner_id }) => ({ id, name, itemCount, hasOwner: owner_id !== null })),
     });
   }
 
@@ -77,7 +83,25 @@ export function createApplication(options) {
       ...item,
       claimedBy: claimantFirstName || claimantName?.trim().split(/\s+/)[0] || null,
     }));
-    return json({ id: list.id, name: list.name, isOwner, canEdit, items });
+    return json({ id: list.id, name: list.name, hasOwner: list.owner_id !== null, isOwner, canEdit, items });
+  }
+
+  function linkWishlist(id, user) {
+    const linked = db.prepare(`
+      UPDATE lists SET owner_id = ?
+      WHERE id = ? AND owner_id IS NULL
+        AND (contact_email IS NULL OR contact_email = (SELECT verified_email FROM accounts WHERE id = ?))
+        AND NOT EXISTS (SELECT 1 FROM lists WHERE owner_id = ?)
+      RETURNING id
+    `).get(user.id, id, user.id, user.id);
+    if (linked) return json(linked);
+    const { owner_id: owner } = db.prepare("SELECT owner_id FROM lists WHERE id = ?").get(id);
+    if (owner === user.id) return json({ id });
+    if (owner) return fail("This wishlist is already linked to another account.", 409);
+    if (db.prepare("SELECT 1 FROM lists WHERE owner_id = ?").get(user.id)) {
+      return fail("You already have a wishlist linked to your account.", 409);
+    }
+    return fail("Sign in with the verified Google account for this wishlist to link it.", 403);
   }
 
   async function productDetails(user, url) {
@@ -129,6 +153,7 @@ export function createApplication(options) {
     const isOwner = list.owner_id === user.id;
     const editor = isOwner || (!list.owner_id && list.creator_id === user.id);
     const action = input.action;
+    if (action === "link-wishlist") return linkWishlist(list.id, user);
     if (action === "add" || action === "purchase") {
       const purchase = action === "purchase";
       if (purchase ? isOwner : !editor) return fail("You can’t add this item.", 403);

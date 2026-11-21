@@ -162,14 +162,24 @@ dialog .inline-error { margin-inline: 0; }
 .my-list:hover { background: #dce9d9; }
 .my-list strong { display: block; font-size: 1.1rem; }
 .my-list small { color: var(--muted); font-size: .875rem; }
+.wishlist-count { color: var(--muted); font-size: .875rem; font-weight: 400; white-space: nowrap; }
 .personal-icon { display: grid; place-items: center; width: 43px; height: 43px; border-radius: 11px; color: var(--green); background: #f5faf2; font-size: 1.55rem; }
 .my-list > :last-child, .family-chevron { margin-left: auto; font-size: 1.55rem; }
 .family-section { margin-top: 29px; }
 .family-section h2 { font-size: 2rem; }
-.family-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 245px), 1fr)); gap: 10px; list-style: none; margin: 13px 0; padding: 0; }
+.family-grid {
+  --column-gap: 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, max(245px, calc((100% - 2 * var(--column-gap)) / 3))), 1fr));
+  gap: var(--column-gap);
+  list-style: none;
+  margin: 13px 0;
+  padding: 0;
+}
 .family-card { display: flex; align-items: center; gap: 10px; padding: 12px; background: var(--white); border: 1px solid var(--line); border-radius: 12px; text-decoration: none; overflow-wrap: anywhere; }
 .family-card:hover { background: var(--sage); }
 .back-link { display: inline-block; font-weight: 700; text-underline-offset: 3px; margin-block: 23px 12px; }
+.wishlist-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; overflow-wrap: anywhere; }
 .list-controls, .gift-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .gift-list { list-style: none; margin: 0; padding: 3px 25px 22px; }
 .gift-card { display: flex; align-items: flex-start; gap: 15px; border-top: 1px solid var(--line); padding: 17px 0; }
