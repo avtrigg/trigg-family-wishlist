@@ -75,11 +75,12 @@ function authPage(message = "") {
 
 function familyPage(home, draft = null) {
   const personal = home.mine ? '<a class="my-list" href="#' + home.mine + '">' : '<button class="my-list" data-action="my-list">';
-  const family = home.lists.length ? home.lists.map((list) => {
+  const familyLists = home.lists.filter((list) => list.id !== home.mine);
+  const family = familyLists.length ? familyLists.map((list) => {
     const initials = list.name.split(/\s+/).slice(0, 2).map((part) => Array.from(part)[0]?.toLocaleUpperCase()).join("");
     return '<li><a class="family-card" href="#' + list.id + '"><span class="avatar" aria-hidden="true">' + html(initials) +
       '</span><strong>' + html(list.name) + '</strong><span class="family-chevron" aria-hidden="true">›</span></a></li>';
-  }).join("") : '<li class="section-empty">No wishlists yet.</li>';
+  }).join("") : '<li class="section-empty">No other wishlists yet.</li>';
   const importPanel = draft ? '<section class="panel list-heading"><div><h2>Add your browser item</h2>' +
     '<p>Create your wishlist to add ' + html(draft.name || "this item") + '.</p>' + alertRegion + '</div>' +
     '<div class="list-controls"><button class="small-button" data-action="discard-import">Discard</button>' +
