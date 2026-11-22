@@ -154,9 +154,10 @@ export function wishlistImportUrl(address, product) {
   const target = new URL(address.trim());
   const local = ["localhost", "127.0.0.1", "[::1]"].includes(target.hostname);
   if ((target.protocol !== "https:" && !(local && target.protocol === "http:")) ||
-      target.username || target.password || target.pathname !== "/" || target.search || target.hash) {
+      target.username || target.password || target.search || target.hash) {
     throw new Error("Enter the wishlist homepage address, such as http://localhost:3000.");
   }
+  if (!target.pathname.endsWith("/")) target.pathname += "/";
   target.hash = new URLSearchParams({ import: JSON.stringify(product) }).toString();
   return target.href;
 }

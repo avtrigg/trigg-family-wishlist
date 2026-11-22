@@ -26,11 +26,12 @@ export function cookieValue(request, name) {
     .find((part) => part.startsWith(name + "="))?.slice(name.length + 1);
 }
 
-export function createAuth({ db, origin, googleId, googleSecret, familyCode, requestGoogle = fetch, json, fail }) {
+export function createAuth({ db, origin, base = "", googleId, googleSecret, familyCode, requestGoogle = fetch, json, fail }) {
   const secure = origin.startsWith("https:");
+  const home = origin + base;
   const googleEnabled = Boolean(googleId && googleSecret);
-  const cookie = (name, value, age) => name + "=" + value + "; Path=/; HttpOnly; SameSite=Lax; Max-Age=" + age + (secure ? "; Secure" : "");
-  const authError = (code) => Response.redirect(origin + "/?auth=" + code, 303);
+  const cookie = (name, value, age) => name + "=" + value + "; Path=" + (base || "/") + "; HttpOnly; SameSite=Lax; Max-Age=" + age + (secure ? "; Secure" : "");
+  const authError = (code) => Response.redirect(home + "/?auth=" + code, 303);
 
   function viewer(request) {
     const value = cookieValue(request, "family_session");
@@ -100,7 +101,7 @@ export function createAuth({ db, origin, googleId, googleSecret, familyCode, req
     db.prepare("INSERT INTO oauth_states (state, verifier, mode, expires, signup_profile) VALUES (?, ?, ?, ?, ?)")
       .run(state, verifier, mode, Date.now() + 600_000, profile ? JSON.stringify(profile) : null);
     const params = new URLSearchParams({
-      client_id: googleId, redirect_uri: origin + "/auth/google/callback", response_type: "code",
+      client_id: googleId, redirect_uri: home + "/auth/google/callback", response_type: "code",
       scope: "openid email profile", state, code_challenge: digest(verifier), code_challenge_method: "S256",
     });
     return json({ url: "https://accounts.google.com/o/oauth2/v2/auth?" + params }, 200, {
@@ -118,7 +119,7 @@ export function createAuth({ db, origin, googleId, googleSecret, familyCode, req
     const tokenResponse = await requestGoogle("https://oauth2.googleapis.com/token", {
       ...options, method: "POST", body: new URLSearchParams({
         code, client_id: googleId, client_secret: googleSecret, code_verifier: flow.verifier,
-        redirect_uri: origin + "/auth/google/callback", grant_type: "authorization_code",
+        redirect_uri: home + "/auth/google/callback", grant_type: "authorization_code",
       }),
     });
     if (!tokenResponse.ok) return authError("google");
@@ -150,7 +151,7 @@ export function createAuth({ db, origin, googleId, googleSecret, familyCode, req
         throw error;
       }
     }
-    const headers = new Headers({ Location: origin + "/", "Cache-Control": "no-store" });
+    const headers = new Headers({ Location: home + "/", "Cache-Control": "no-store" });
     headers.append("Set-Cookie", startSession(account, request));
     headers.append("Set-Cookie", cookie("family_oauth", "", 0));
     return new Response(null, { status: 303, headers });

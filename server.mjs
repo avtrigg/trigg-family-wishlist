@@ -4,7 +4,10 @@ import { openDatabase } from "./database.mjs";
 
 const port = Number(process.env.PORT || 3000);
 const host = process.env.HOST || "127.0.0.1";
-const origin = new URL(process.env.APP_ORIGIN || "http://localhost:" + port).origin;
+// APP_ORIGIN may include a path prefix (e.g. https://example.com/wishlist) when a reverse proxy strips it.
+const appUrl = new URL(process.env.APP_ORIGIN || "http://localhost:" + port);
+const origin = appUrl.origin;
+const base = appUrl.pathname.replace(/\/+$/, "");
 const familyCode = process.env.FAMILY_ACCESS_CODE;
 const production = process.env.NODE_ENV === "production";
 if (production && (!origin.startsWith("https:") || !familyCode || familyCode.length < 16)) {
@@ -12,7 +15,7 @@ if (production && (!origin.startsWith("https:") || !familyCode || familyCode.len
 }
 
 const app = createApplication({
-  db: openDatabase(process.env.DATABASE_PATH || "wishlist.sqlite"), origin, familyCode,
+  db: openDatabase(process.env.DATABASE_PATH || "wishlist.sqlite"), origin, base, familyCode,
   googleId: process.env.GOOGLE_CLIENT_ID, googleSecret: process.env.GOOGLE_CLIENT_SECRET,
 });
 const server = createServer({ requestTimeout: 15_000, headersTimeout: 10_000 }, async (incoming, outgoing) => {
@@ -33,7 +36,9 @@ const server = createServer({ requestTimeout: 15_000, headersTimeout: 10_000 }, 
       method: incoming.method, headers: incoming.headers,
       body: chunks.length ? Buffer.concat(chunks) : undefined,
     });
-    const result = await app(request, incoming.socket.remoteAddress);
+    const peer = incoming.socket.remoteAddress;
+    const proxied = typeof incoming.headers["x-real-ip"] === "string" && /^(127\.|::1$|::ffff:127\.)/.test(peer || "");
+    const result = await app(request, proxied ? incoming.headers["x-real-ip"] : peer);
     const headers = Object.fromEntries(result.headers);
     if (result.headers.has("set-cookie")) headers["set-cookie"] = result.headers.getSetCookie();
     outgoing.writeHead(result.status, headers).end(Buffer.from(await result.arrayBuffer()));
@@ -42,4 +47,4 @@ const server = createServer({ requestTimeout: 15_000, headersTimeout: 10_000 }, 
     outgoing.end();
   }
 });
-server.listen(port, host, () => console.log("Trigg Family Wishlist • " + origin));
+server.listen(port, host, () => console.log("Trigg Family Wishlist • " + origin + base + "/"));

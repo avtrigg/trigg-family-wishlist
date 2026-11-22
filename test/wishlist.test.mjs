@@ -323,3 +323,15 @@ test("an Amazon verification page is reported instead of treated as a product pa
   assert.match(result.message, /verification page/);
   assert.match(logs[0], /amazon_verification_page/);
 });
+
+test("a path prefix scopes session cookies and Google redirects", async (t) => {
+  const requestGoogle = async () => { throw new Error("not called"); };
+  const { send } = fixture(t, { base: "/wishlist", googleId: "id", googleSecret: "secret", requestGoogle });
+  const signup = await send("/api/auth/signup", { username: "pat", password, familyCode, firstName: "Pat", lastName: "Test" }, undefined, 201);
+  assert.match(signup.headers.getSetCookie()[0], /; Path=\/wishlist;/);
+  const google = await send("/api/auth/google", { familyCode });
+  const redirect = new URL((await google.json()).url ?? google.headers.get("location"));
+  assert.equal(redirect.searchParams.get("redirect_uri"), origin + "/wishlist/auth/google/callback");
+  const failed = await send("/auth/google/callback?error=denied", undefined, undefined, 303);
+  assert.match(failed.headers.get("location"), /^http:\/\/localhost:3000\/wishlist\/\?auth=/);
+});

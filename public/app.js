@@ -26,7 +26,7 @@ function hero(title, description) {
 }
 
 async function api(route, data, signal) {
-  const response = await fetch("/api/" + route, {
+  const response = await fetch("api/" + route, {
     cache: "no-store", signal,
     ...(data && { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }),
   });
@@ -100,7 +100,7 @@ function familyPage(home, draft = null) {
 
 function itemCard(item) {
   const picture = item.image ? '<img class="item-image" src="' + html(item.image) + '" alt="" referrerpolicy="no-referrer" loading="lazy">' :
-    '<span class="item-image fallback" aria-hidden="true"><img src="/favicon.svg" alt=""></span>';
+    '<span class="item-image fallback" aria-hidden="true"><img src="favicon.svg" alt=""></span>';
   const badge = item.claimedBy ? '<span class="claimed">Claimed by ' + html(item.claimedBy) + '</span>' : "";
   const controls = [];
   if ((wishlist.canEdit && !item.addedBy) || item.addedByMe) {
@@ -132,7 +132,7 @@ function listPage() {
     (wishlist.isOwner ? "Your gift ideas for the family." : "Claim a gift to help the family avoid duplicates.") +
     '</p></div><div class="list-controls">' + controls + '</div></div>' + alertRegion +
     (wishlist.items.length ? '<ul class="gift-list">' + wishlist.items.map(itemCard).join("") + '</ul>' :
-      '<div class="empty"><img class="empty-icon" src="/favicon.svg" alt=""><h2>No items yet</h2><p>' +
+      '<div class="empty"><img class="empty-icon" src="favicon.svg" alt=""><h2>No items yet</h2><p>' +
       (wishlist.canEdit ? "Add your first gift idea." : "Gift ideas will appear here when they’re added.") + '</p></div>') + '</section>';
 }
 
@@ -510,7 +510,7 @@ async function start() {
     const status = new URLSearchParams(location.search).get("auth");
     if (account.user || !status) await render();
     else {
-      history.replaceState(null, "", "/");
+      history.replaceState(null, "", location.pathname);
       if (status === "signup") authMode = "signup";
       authPage(status === "signup" ? "Create an account with this Google account first." : "Google sign-in couldn’t be completed. Try again.");
     }

@@ -82,7 +82,8 @@ test("extension adds only temporary page access and passes an encoded draft to t
   assert.equal(target.search, "");
   assert.deepEqual(JSON.parse(new URLSearchParams(target.hash.slice(1)).get("import")), product);
   assert.throws(() => wishlistImportUrl("http://remote.example", product));
-  assert.throws(() => wishlistImportUrl("https://host.example/another-page", product));
+  const prefixed = new URL(wishlistImportUrl("https://host.example/wishlist", product));
+  assert.equal(prefixed.origin + prefixed.pathname, "https://host.example/wishlist/");
 });
 
 test("Amazon capture prefers a current price and skips hidden, list, unit, and subscription prices", () => {

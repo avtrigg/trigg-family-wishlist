@@ -50,7 +50,7 @@ document.querySelector("#share").addEventListener("submit", async (event) => {
   button.disabled = true;
   try {
     const destination = wishlistImportUrl(address.value, product);
-    await chrome.storage.local.set({ wishlistAddress: new URL(destination).origin });
+    await chrome.storage.local.set({ wishlistAddress: address.value.trim() });
     await chrome.tabs.create({ url: destination });
   } catch (error) {
     document.querySelector("#settings").open = true;
